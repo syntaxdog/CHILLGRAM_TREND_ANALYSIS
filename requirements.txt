@@ -1,7 +1,5 @@
 kiwipiepy>=0.17.0
 scikit-learn>=1.3.0
-keybert>=0.8.0
-sentence-transformers>=2.2.0
 pytrends>=4.9.0
 python-dotenv>=1.0.0
 pandas>=2.0.0

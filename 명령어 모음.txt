@@ -6,10 +6,14 @@ source .venv/bin/activate
 
 # 백필 실행
 python main.py --backfill --day 1
-python main.py --backfill --day 2   # 다음날
+python main.py --backfill --day 2
 python main.py --backfill --day 3
 python main.py --backfill --day 4
 
 # 패키지 설치
 pip install -r requirements.txt
+
+# 깃 Pull
+cd ~/CHILLGRAM_TREND_ANALYSIS
+git pull origin main
 

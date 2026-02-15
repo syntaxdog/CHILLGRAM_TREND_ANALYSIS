@@ -71,10 +71,12 @@ def _compute_monthly_frequency(
 
     for doc in docs:
         date_str = doc.get("date", "")
-        if len(date_str) >= 7:
+        if len(date_str) >= 10 and date_str[4] == "-":
+            month = date_str[:7]  # "2024-01-15" → "2024-01"
+        elif len(date_str) >= 8 and date_str[4] != "-":
+            month = f"{date_str[:4]}-{date_str[4:6]}"  # "20240115" → "2024-01"
+        elif len(date_str) >= 7 and date_str[4] == "-":
             month = date_str[:7]  # "2024-01"
-        elif len(date_str) >= 6:
-            month = f"{date_str[:4]}-{date_str[4:6]}"
         else:
             continue
 

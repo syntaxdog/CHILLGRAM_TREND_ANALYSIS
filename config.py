@@ -1,124 +1,82 @@
-"""프로젝트 설정값"""
+"""프로젝트 설정값 — domain_config.json에서 도메인 지식 로드"""
 
-# === 타겟 설정 ===
-TARGET_PRODUCT = "가공식품 (과자·스낵류)"
-TARGET_CONSUMER = "MZ세대 (20~30대)"
-ANALYSIS_PERIOD_MONTHS = 6
+from datetime import datetime
 
-# === 검색 키워드 ===
-SEARCH_QUERIES = [
-    "과자 패키지 디자인",
-    "신상 과자",
-    "편의점 신상",
-    "패키지 예쁜 과자",
-    "포장 디자인 과자",
-    "과자 리뷰 신상",
-    "스낵 패키지",
-    "과자 트렌드",
-]
+from config_generator import load_domain_config
 
-# === 네이버 블로그 수집 설정 ===
-NAVER_DISPLAY_COUNT = 100  # 한 쿼리당 수집 건수 (최대 100)
-NAVER_SORT = "date"  # sim(정확도순) / date(날짜순)
+# === 도메인 설정 (domain_config.json) ===
+_domain = load_domain_config()
 
-# === YouTube 수집 설정 ===
-YOUTUBE_MAX_RESULTS = 50  # 한 쿼리당 수집 건수 (최대 50)
+TARGET_PRODUCT = _domain["target_product"]
+TARGET_CONSUMER = _domain["target_consumer"]
+BASE_QUERIES = _domain["base_queries"]
+SEASONAL_QUERIES = _domain["seasonal_queries"]
+USER_DICTIONARY = [tuple(item) for item in _domain["user_dictionary"]]
+STOPWORDS = set(_domain["stopwords"])
+NEGATIVE_EXPRESSIONS = _domain["negative_expressions"]
+DESIGN_CATEGORIES = _domain["design_categories"]
+SEASONAL_KEYWORDS = _domain["seasonal_keywords"]
 
-# === Kiwi 사용자 사전 ===
-# 형태소 분석기가 올바르게 인식해야 하는 도메인 용어
-USER_DICTIONARY = [
-    ("뉴트로", "NNG"),
-    ("클린라벨", "NNG"),
-    ("제로슈거", "NNG"),
-    ("헬시플레저", "NNG"),
-    ("그라데이션", "NNG"),
-    ("파스텔톤", "NNG"),
-    ("어스톤", "NNG"),
-    ("크래프트지", "NNG"),
-    ("산세리프", "NNG"),
-    ("미니멀리즘", "NNG"),
-    ("이지컷", "NNG"),
-    ("스탠딩파우치", "NNG"),
-    ("지퍼백", "NNG"),
-    ("두바이초콜릿", "NNG"),
-    ("흑임자", "NNG"),
-    ("프로틴", "NNG"),
-    ("홈카페", "NNG"),
-    ("혼술", "NNG"),
-    ("비건", "NNG"),
-    ("Y2K", "NNG"),
-    ("빼빼로데이", "NNG"),
-    ("말차", "NNG"),
-    ("제로칼로리", "NNG"),
-    ("무설탕", "NNG"),
-    ("저당", "NNG"),
-    ("글루텐프리", "NNG"),
-    ("레트로", "NNG"),
-    ("미니사이즈", "NNG"),
-    ("소분", "NNG"),
-]
+# === 분석 기간 ===
+ANALYSIS_PERIOD_MONTHS = 12
 
-# === 불용어 사전 (디자인과 무관한 고빈도 단어) ===
-STOPWORDS = {
-    # 일반 불용어
-    "맛있다", "맛있는", "추천", "먹방", "구매", "배송", "가격", "할인",
-    "가성비", "편의점", "마트", "리뷰", "후기", "솔직", "진짜", "정말",
-    "너무", "완전", "개인", "의견", "사진", "블로그", "포스팅",
-    "오늘", "어제", "내일", "최근", "요즘", "지금",
-    "이것", "저것", "그것", "여기", "저기", "거기",
-    "하다", "있다", "없다", "되다", "보다", "같다", "받다",
-    "먹다", "사다", "주다", "알다", "좋다", "많다",
-    # 쇼핑/배송 관련
-    "택배", "주문", "결제", "품절", "재입고", "환불",
+# === 수집 설정 (모드별) ===
+COLLECT_LIMITS = {
+    "backfill": {"naver": 1000, "youtube": 200},
+    "daily":    {"naver": 100,  "youtube": 30},
 }
 
-# === 부정어 사전 (부정 문맥 필터링용) ===
-NEGATIVE_EXPRESSIONS = [
-    "별로", "안 좋", "불편", "과대포장", "뜯기 힘들",
-    "실망", "최악", "안 예쁜", "촌스러", "올드",
-    "쓰레기", "낭비", "비싸", "안 맞",
-]
+# === 백필 분할 (4일) ===
+BACKFILL_TOTAL_DAYS = 4
 
-# === 디자인 카테고리 ===
-DESIGN_CATEGORIES = {
-    "트렌드맛·원료": [
-        "말차", "두바이초콜릿", "흑임자", "제로슈거", "프로틴",
-        "저당", "무설탕", "글루텐프리", "제로칼로리", "오트밀",
-        "콤부차", "단백질", "아사이", "매운맛", "마라",
-    ],
-    "시즌·이벤트": [
-        "발렌타인데이", "벚꽃", "크리스마스", "빼빼로데이",
-        "할로윈", "추석", "설날", "여름", "겨울", "봄", "가을",
-        "한정판", "시즌", "콜라보",
-    ],
-    "비주얼·감성": [
-        "뉴트로", "미니멀", "프리미엄", "Y2K", "힐링",
-        "레트로", "파스텔", "그라데이션", "파스텔톤", "어스톤",
-        "산세리프", "감성", "고급", "귀여운", "깔끔",
-    ],
-    "라이프스타일": [
-        "비건", "헬시플레저", "캠핑", "혼술", "홈카페",
-        "다이어트", "운동", "등산", "피크닉", "친환경",
-        "제로웨이스트", "플렉스",
-    ],
-    "소재·구조": [
-        "크래프트지", "투명", "소분", "미니사이즈",
-        "이지컷", "스탠딩파우치", "지퍼백", "클린라벨",
-        "재활용", "종이포장", "무광", "유광",
-    ],
-}
-
-# === 트렌드 분석 설정 ===
-TREND_RISING_THRESHOLD = 1.5   # 최근 3개월 평균 > 전체 평균 × 1.5 → 상승
-TREND_FALLING_THRESHOLD = 0.5  # 최근 3개월 평균 < 전체 평균 × 0.5 → 하강
-
-# === 최종 선정 가중치 ===
-WEIGHT_TREND = 0.4       # 트렌드 상승세
-WEIGHT_DESIGN = 0.3      # 디자인 반영 가능성
-WEIGHT_DIVERSITY = 0.2   # 키워드 다양성
-WEIGHT_NOVELTY = 0.1     # 참신성
-
-# === 최종 키워드 수 ===
-FINAL_KEYWORD_COUNT = 20
+# === 키워드 추출 제한 ===
 TFIDF_TOP_N = 100
 KEYBERT_TOP_N = 50
+FINAL_KEYWORD_COUNT = 20
+
+# === 트렌드 판정 임계값 ===
+TREND_RISING_THRESHOLD = 1.5
+TREND_FALLING_THRESHOLD = 0.5
+SEASONAL_TOLERANCE = 0.3  # 계절 키워드는 1.5 + 0.3 = 1.8 이상이어야 상승
+
+# === 스코어링 가중치 ===
+WEIGHT_TREND = 0.30
+WEIGHT_RECENCY = 0.20
+WEIGHT_DESIGN = 0.25
+WEIGHT_DIVERSITY = 0.15
+WEIGHT_NOVELTY = 0.10
+
+
+def get_search_queries(mode: str = "daily", day: int | None = None) -> list[str]:
+    """모드에 따라 검색 쿼리 반환.
+
+    Args:
+        mode: "backfill" 또는 "daily"
+        day: backfill 분할 실행 시 일차 (1~BACKFILL_TOTAL_DAYS).
+             None이면 전체 쿼리 반환.
+    """
+    if mode == "backfill":
+        # 전체 쿼리 구성: base + 모든 시즌
+        all_queries = list(BASE_QUERIES)
+        for month_queries in SEASONAL_QUERIES.values():
+            all_queries.extend(month_queries)
+
+        if day is not None:
+            # day별로 쿼리 균등 분할
+            chunk_size = len(all_queries) // BACKFILL_TOTAL_DAYS
+            remainder = len(all_queries) % BACKFILL_TOTAL_DAYS
+            start = chunk_size * (day - 1) + min(day - 1, remainder)
+            end = start + chunk_size + (1 if day <= remainder else 0)
+            return all_queries[start:end]
+
+        return all_queries
+    else:
+        # daily: base + 현재 월 ±1개월의 시즌 쿼리만
+        queries = list(BASE_QUERIES)
+        current_month = datetime.now().month
+        for offset in [-1, 0, 1]:
+            m = ((current_month - 1 + offset) % 12) + 1
+            month_key = str(m)
+            if month_key in SEASONAL_QUERIES:
+                queries.extend(SEASONAL_QUERIES[month_key])
+        return queries

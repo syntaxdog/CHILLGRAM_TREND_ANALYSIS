@@ -3,7 +3,7 @@
 import json
 import os
 
-from config import DESIGN_CATEGORIES
+from config import DESIGN_CATEGORIES, TARGET_PRODUCT
 
 
 def filter_design_keywords(
@@ -60,7 +60,7 @@ def _filter_with_gemini(keywords: list[str], api_key: str) -> dict[str, str]:
         f"- {cat}: {', '.join(examples[:5])}" for cat, examples in DESIGN_CATEGORIES.items()
     )
 
-    prompt = f"""다음 키워드들이 식품(과자·스낵) 패키지 디자인의 콘셉트 방향으로 활용 가능한지 판단하세요.
+    prompt = f"""다음 키워드들이 {TARGET_PRODUCT} 패키지 디자인의 콘셉트 방향으로 활용 가능한지 판단하세요.
 
 활용 가능하면 아래 카테고리 중 하나를 지정하세요:
 {categories_desc}

@@ -11,7 +11,7 @@ except ImportError:
     HAS_PYTRENDS = False
 
 
-def get_google_trends(keywords: list[str], timeframe: str = "today 6-m") -> pd.DataFrame:
+def get_google_trends(keywords: list[str], timeframe: str = "today 12-m") -> pd.DataFrame:
     """키워드별 Google Trends 검색량 추이 수집.
 
     Args:

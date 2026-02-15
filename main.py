@@ -5,12 +5,16 @@
 직접 반영 가능한 트렌드 키워드 20개를 도출합니다.
 
 사용법:
-    python main.py
+    python main.py                  # 일일 크롤링 모드
+    python main.py --backfill       # 12개월 백필 (전체)
+    python main.py --backfill --day 1  # 백필 1일차 (쿼리 분할)
 """
 
+import argparse
 import csv
 import json
 import os
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -34,15 +38,20 @@ from processors.preprocessor import preprocess_documents
 from processors.keyword_extractor import extract_tfidf_keywords, extract_keybert_keywords
 from processors.design_filter import filter_design_keywords
 from analyzers.trend_analyzer import analyze_trends
-from config import TARGET_PRODUCT, TARGET_CONSUMER, FINAL_KEYWORD_COUNT
+from storage.gcp_client import upload_to_gcs, insert_raw_contents, insert_trend_results
+from config import (
+    TARGET_PRODUCT, TARGET_CONSUMER, FINAL_KEYWORD_COUNT,
+    DESIGN_CATEGORIES, BACKFILL_TOTAL_DAYS, get_search_queries,
+)
 
 
-def main():
+def main(mode: str = "daily", day: int | None = None):
     print("=" * 60)
     print("  식품 패키지 디자인 트렌드 키워드 추출 파이프라인")
     print("=" * 60)
     print(f"  타겟 제품군: {TARGET_PRODUCT}")
     print(f"  타겟 소비자: {TARGET_CONSUMER}")
+    print(f"  실행 모드: {mode}" + (f" (day {day}/{BACKFILL_TOTAL_DAYS})" if day else ""))
     print(f"  실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
@@ -50,15 +59,19 @@ def main():
     print("\n[Phase 1] 데이터 수집")
     print("-" * 40)
 
-    naver_data = collect_naver_blogs()
-    youtube_data = collect_youtube()
+    search_queries = get_search_queries(mode, day=day)
+    print(f"  검색 쿼리 {len(search_queries)}개 사용 (모드: {mode})")
+
+    naver_data = collect_naver_blogs(search_queries, mode=mode)
+    youtube_data = collect_youtube(search_queries, mode=mode)
 
     all_documents = naver_data + youtube_data
     print(f"\n  총 수집 문서: {len(all_documents)}건")
 
-    # 원본 수집 데이터 저장
+    # 원본 수집 데이터 저장 (로컬 + GCP)
     if all_documents:
         _save_raw_data(naver_data, youtube_data)
+        _save_to_gcp(naver_data, youtube_data)
 
     if not all_documents:
         print("\n[!] 수집된 데이터가 없습니다.")
@@ -136,9 +149,17 @@ def main():
         naver_search_df, naver_shopping_df,
     )
 
-    # ── 결과 출력 ──
+    # ── 결과 출력 + 저장 ──
     _print_results(final_keywords)
     _save_results(final_keywords)
+
+    # BigQuery에 분석 결과 저장
+    print("\n[Phase 6] 분석 결과 BigQuery 저장")
+    print("-" * 40)
+    try:
+        insert_trend_results(final_keywords)
+    except Exception as e:
+        print(f"  [WARN] BigQuery 결과 저장 실패: {e}")
 
     print("\n완료!")
 
@@ -248,38 +269,83 @@ def _save_raw_data(naver_data: list[dict], youtube_data: list[dict]):
     print(f"    CSV:  {csv_path}")
 
 
+def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict]):
+    """수집 데이터를 GCS 백업 + BigQuery INSERT"""
+    print("\n  [GCP 저장]")
+
+    # GCS 백업
+    try:
+        if naver_data:
+            upload_to_gcs(naver_data, "naver")
+        if youtube_data:
+            upload_to_gcs(youtube_data, "youtube")
+    except Exception as e:
+        print(f"  [WARN] GCS 업로드 실패: {e}")
+
+    # BigQuery INSERT (중복 제외)
+    try:
+        all_docs = naver_data + youtube_data
+        insert_raw_contents(all_docs)
+    except Exception as e:
+        print(f"  [WARN] BigQuery INSERT 실패: {e}")
+
+
 def _generate_demo_data() -> list[dict]:
-    """API 키 없을 때 사용할 데모 데이터"""
-    demo_posts = [
-        {"title": "요즘 핫한 말차 과자 패키지 진짜 예쁘다", "description": "말차 그린톤의 미니멀한 디자인이 눈에 띄네요 뉴트로 감성도 살짝 들어가 있고 프리미엄 느낌", "postdate": "20250110", "source": "naver_blog"},
-        {"title": "두바이초콜릿 시리즈 신상 과자 리뷰", "description": "두바이초콜릿 컨셉 패키지 고급스러운 골드톤 크래프트지 소재로 되어있어요 프리미엄 라인", "postdate": "20250115", "source": "naver_blog"},
-        {"title": "편의점 신상 제로슈거 스낵 모음", "description": "제로슈거 저당 과자 미니사이즈로 소분되어 있고 클린라벨 깔끔한 패키지 디자인 헬시플레저 트렌드 반영", "postdate": "20250120", "source": "naver_blog"},
-        {"title": "발렌타인데이 한정판 과자 패키지 모음", "description": "발렌타인데이 시즌 핑크톤 파스텔 일러스트 Y2K 감성 귀여운 패키지 선물용", "postdate": "20250201", "source": "naver_blog"},
-        {"title": "비건 과자 패키지 디자인 트렌드", "description": "비건 친환경 재활용 종이포장 어스톤 컬러 미니멀리즘 자연 감성 캠핑 피크닉용", "postdate": "20250105", "source": "naver_blog"},
-        {"title": "2025 과자 패키지 트렌드 뉴트로", "description": "뉴트로 레트로 감성 복고풍 디자인 과자 패키지 Y2K 색감 그라데이션 파스텔톤 조합", "postdate": "20250108", "source": "naver_blog"},
-        {"title": "프로틴 과자 신상 리뷰", "description": "프로틴 고단백 스낵 운동 후 간식 스탠딩파우치 지퍼백 형태 프리미엄 패키지", "postdate": "20250125", "source": "naver_blog"},
-        {"title": "벚꽃 시즌 한정 과자 모음", "description": "벚꽃 시즌 핑크 파스텔 봄 감성 과자 패키지 콜라보 한정판 예쁜 디자인", "postdate": "20250301", "source": "naver_blog"},
-        {"title": "홈카페 과자 추천", "description": "홈카페 간식 말차 쿠키 크래프트지 포장 미니사이즈 소분 개별포장 감성 패키지", "postdate": "20250112", "source": "naver_blog"},
-        {"title": "흑임자 과자 트렌드", "description": "흑임자 블랙 톤 고급스러운 무광 패키지 한국적 감성 프리미엄 라인 미니멀 디자인", "postdate": "20250118", "source": "naver_blog"},
-        {"title": "캠핑 스낵 패키지 리뷰", "description": "캠핑용 과자 이지컷 소분 포장 스탠딩파우치 아웃도어 감성 투명 창이 있어서 좋아요", "postdate": "20250130", "source": "naver_blog"},
-        {"title": "글루텐프리 과자 신상", "description": "글루텐프리 건강 스낵 클린라벨 깔끔한 산세리프 폰트 화이트 톤 미니멀 디자인", "postdate": "20250205", "source": "naver_blog"},
-        {"title": "마라맛 과자 시리즈", "description": "마라 매운맛 레드톤 강렬한 패키지 디자인 불꽃 그래픽 MZ세대 타겟 플렉스 느낌", "postdate": "20250210", "source": "naver_blog"},
-        {"title": "편의점 콜라보 과자 한정판", "description": "콜라보 한정판 과자 특별한 패키지 콜렉터블 디자인 시즌 이벤트 굿즈 느낌", "postdate": "20250215", "source": "naver_blog"},
-        {"title": "다이어트 과자 제로칼로리", "description": "다이어트 제로칼로리 스낵 헬시플레저 라이트한 패키지 파스텔 블루 그린 톤 깔끔한 느낌", "postdate": "20250220", "source": "naver_blog"},
-        {"title": "크리스마스 한정 과자 패키지", "description": "크리스마스 레드 그린 겨울 시즌 한정판 과자 선물세트 프리미엄 포장 리본", "postdate": "20241225", "source": "naver_blog"},
-        {"title": "오트밀 쿠키 신상 리뷰", "description": "오트밀 건강한 간식 크래프트지 자연 감성 홈카페 스타일 소분 패키지", "postdate": "20250128", "source": "naver_blog"},
-        {"title": "유광 vs 무광 패키지 비교", "description": "유광 패키지 화려한 느낌 무광 패키지 고급스러운 프리미엄 감성 미니멀 트렌드", "postdate": "20250203", "source": "naver_blog"},
-        {"title": "편의점 신상 과자 2025", "description": "편의점 신상 과자 말차 두바이초콜릿 제로슈거 프로틴 미니사이즈 트렌드 키워드 총정리", "postdate": "20250212", "source": "naver_blog"},
-        {"title": "혼술 안주 과자 패키지", "description": "혼술 안주용 스낵 블랙톤 시크한 패키지 어스톤 감성 미니멀 지퍼백 재밀봉", "postdate": "20250207", "source": "naver_blog"},
-        {"title": "콤부차 맛 과자 출시", "description": "콤부차 과자 새로운 맛 파스텔 그린 패키지 건강 트렌드 프리미엄 라인", "postdate": "20250218", "source": "naver_blog"},
-        {"title": "과자 트렌드 2025 총정리", "description": "말차 두바이초콜릿 제로슈거 흑임자 프로틴 글루텐프리 미니사이즈 뉴트로 Y2K 헬시플레저 비건 소분 크래프트지", "postdate": "20250225", "source": "naver_blog"},
-        {"title": "아사이 과자 신상 리뷰", "description": "아사이 보라색 퍼플톤 건강한 이미지 프리미엄 패키지 그라데이션 디자인", "postdate": "20250222", "source": "naver_blog"},
-        {"title": "제로웨이스트 과자 포장", "description": "제로웨이스트 친환경 종이포장 재활용 비건 감성 어스톤 크래프트지 소재", "postdate": "20250115", "source": "naver_blog"},
-        {"title": "빼빼로데이 과자 패키지", "description": "빼빼로데이 특별 패키지 핑크 하트 일러스트 귀여운 디자인 시즌 이벤트", "postdate": "20241111", "source": "naver_blog"},
+    """API 키 없을 때 사용할 데모 데이터 (DESIGN_CATEGORIES 기반 동적 생성)"""
+    # DESIGN_CATEGORIES에서 샘플 키워드 추출
+    all_keywords = []
+    for cat, words in DESIGN_CATEGORIES.items():
+        all_keywords.extend(words[:8])
+
+    # 데모 포스트 동적 생성
+    demo_posts = []
+    months = [
+        "20250301", "20250315", "20250401", "20250420",
+        "20250510", "20250601", "20250715", "20250801",
+        "20250910", "20251005", "20251115", "20251201",
+        "20260101", "20260110", "20260115", "20260120",
+        "20260125", "20260130", "20260201", "20260205",
+        "20260208", "20260210", "20260212", "20260214",
+        "20260215",
     ]
+
+    for i, date in enumerate(months):
+        # 랜덤하게 3~5개 키워드 조합
+        sample_size = min(random.randint(3, 5), len(all_keywords))
+        selected = random.sample(all_keywords, sample_size)
+
+        demo_posts.append({
+            "title": f"{TARGET_PRODUCT} 트렌드 키워드 - {' '.join(selected[:2])}",
+            "description": " ".join(selected) + f" {TARGET_PRODUCT} 패키지 디자인 트렌드",
+            "postdate": date,
+            "source": "naver_blog",
+        })
+
     print(f"  [데모] {len(demo_posts)}건의 샘플 데이터를 사용합니다")
     return demo_posts
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="식품 패키지 디자인 트렌드 키워드 추출 파이프라인"
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="12개월 백필 모드 (모든 시즌 쿼리 포함)",
+    )
+    parser.add_argument(
+        "--day",
+        type=int,
+        choices=range(1, BACKFILL_TOTAL_DAYS + 1),
+        default=None,
+        help=f"백필 분할 실행 일차 (1~{BACKFILL_TOTAL_DAYS}). YouTube 쿼터 분산용.",
+    )
+    args = parser.parse_args()
+
+    run_mode = "backfill" if args.backfill else "daily"
+
+    if args.day and not args.backfill:
+        parser.error("--day는 --backfill과 함께 사용해야 합니다.")
+
+    main(mode=run_mode, day=args.day)

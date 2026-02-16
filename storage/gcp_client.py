@@ -68,6 +68,44 @@ def get_existing_ids() -> set[str]:
         return set()
 
 
+def load_all_raw_contents() -> list[dict]:
+    """BigQuery raw_contents에서 전체 수집 데이터를 로드.
+
+    Returns:
+        [{"title": str, "description": str, "postdate": str, "source": str}, ...]
+        (전처리 파이프라인 입력 형식에 맞춤)
+    """
+    client = get_bq_client()
+    query = f"""
+        SELECT title, description, published_date, source
+        FROM `{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE_RAW}`
+        WHERE title IS NOT NULL AND title != ''
+        ORDER BY published_date ASC
+    """
+
+    try:
+        result = client.query(query).result()
+    except Exception as e:
+        print(f"  [BigQuery] 전체 데이터 로드 실패: {e}")
+        return []
+
+    documents = []
+    for row in result:
+        pub_date = ""
+        if row.published_date:
+            pub_date = str(row.published_date).replace("-", "")[:8]
+
+        documents.append({
+            "title": row.title or "",
+            "description": row.description or "",
+            "postdate": pub_date,
+            "source": row.source or "",
+        })
+
+    print(f"  [BigQuery] 전체 {len(documents)}건 로드 완료")
+    return documents
+
+
 def upload_to_gcs(data: dict, prefix: str) -> str:
     """JSON 데이터를 GCS에 업로드. 반환: gs:// 경로"""
     client = get_gcs_client()
@@ -182,6 +220,7 @@ def insert_trend_results(keywords: list[dict]) -> int:
             "analysis_date": today,
             "rank": kw.get("rank", 0),
             "keyword": kw.get("keyword", ""),
+            "extended_keyword": kw.get("extended_keyword", kw.get("keyword", "")),
             "category": kw.get("category", ""),
             "trend": kw.get("trend", ""),
             "score": kw.get("final_score", 0.0),

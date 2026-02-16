@@ -26,6 +26,7 @@ def analyze_trends(
     google_trends_df: pd.DataFrame | None = None,
     naver_search_trend_df: pd.DataFrame | None = None,
     naver_shopping_trend_df: pd.DataFrame | None = None,
+    extended_keywords: list[tuple[str, float]] | None = None,
 ) -> list[dict]:
     """트렌드 분석 후 최종 키워드 20개 선정."""
     if not design_keywords:
@@ -58,8 +59,35 @@ def analyze_trends(
     # 6. 카테고리 다양성 보장하며 상위 20개 선정
     final_keywords = _select_diverse_top(scored_keywords, FINAL_KEYWORD_COUNT)
 
+    # 7. extended_keyword 매핑 (기존 keyword를 포함하는 확장 구문 중 최고 점수)
+    if extended_keywords:
+        _map_extended_keywords(final_keywords, extended_keywords)
+
     print(f"  [트렌드] 최종 {len(final_keywords)}개 키워드 선정 완료")
     return final_keywords
+
+
+def _map_extended_keywords(
+    final_keywords: list[dict],
+    extended_keywords: list[tuple[str, float]],
+) -> None:
+    """각 최종 키워드에 대해 가장 관련도 높은 확장 키워드를 매핑.
+
+    기존 keyword를 포함하는 확장 구문 중 TF-IDF 점수가 가장 높은 것을 선택.
+    """
+    for kw in final_keywords:
+        word = kw["keyword"]
+        best_phrase = None
+        best_score = -1
+
+        for phrase, score in extended_keywords:
+            # 확장 구문에 기존 키워드가 포함되어 있는지 확인
+            if word in phrase.split():
+                if score > best_score:
+                    best_phrase = phrase
+                    best_score = score
+
+        kw["extended_keyword"] = best_phrase if best_phrase else word
 
 
 def _compute_monthly_frequency(

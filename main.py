@@ -35,10 +35,10 @@ from collectors.youtube import collect_youtube
 from collectors.google_trends import get_google_trends
 from collectors.naver_datalab import get_search_trend, get_shopping_keywords_trend
 from processors.preprocessor import preprocess_documents
-from processors.keyword_extractor import extract_tfidf_keywords, extract_keybert_keywords
+from processors.keyword_extractor import extract_tfidf_keywords, extract_keybert_keywords, extract_extended_keywords
 from processors.design_filter import filter_design_keywords
 from analyzers.trend_analyzer import analyze_trends
-from storage.gcp_client import upload_to_gcs, insert_raw_contents, insert_trend_results
+from storage.gcp_client import upload_to_gcs, insert_raw_contents, insert_trend_results, load_all_raw_contents
 from config import (
     TARGET_PRODUCT, TARGET_CONSUMER, FINAL_KEYWORD_COUNT,
     DESIGN_CATEGORIES, BACKFILL_TOTAL_DAYS, get_search_queries,
@@ -77,11 +77,32 @@ def main(mode: str = "daily", day: int | None = None):
         print("\n[!] 수집된 데이터가 없습니다.")
         print("    .env 파일에 API 키를 설정해주세요.")
         print("    (.env.example 파일을 참고하세요)")
+        if mode == "backfill":
+            print("\n    backfill 모드: 수집할 데이터가 없어 종료합니다.")
+            return
         print("\n    데모 모드로 실행합니다...\n")
         all_documents = _generate_demo_data()
 
-    # ── Phase 2: 전처리 ──
-    print("\n[Phase 2] 전처리")
+    # ── backfill 모드: 수집 + 저장만 하고 종료 ──
+    if mode == "backfill":
+        print("\n[backfill] 수집 + 저장 완료. 분석은 daily 모드에서 전체 데이터로 실행됩니다.")
+        print("완료!")
+        return
+
+    # ── daily 모드: BigQuery에서 전체 데이터 로드 후 분석 ──
+    print("\n[Phase 2] BigQuery 전체 데이터 로드")
+    print("-" * 40)
+
+    historical_docs = load_all_raw_contents()
+    if historical_docs:
+        # 오늘 수집분과 합치지 않음 — BigQuery에 이미 INSERT됨
+        all_documents = historical_docs
+        print(f"  BigQuery 전체 데이터 {len(all_documents)}건으로 분석 실행")
+    else:
+        print("  [WARN] BigQuery 데이터 로드 실패 — 오늘 수집분만으로 분석")
+
+    # ── Phase 3: 전처리 ──
+    print("\n[Phase 3] 전처리")
     print("-" * 40)
 
     processed_docs = preprocess_documents(all_documents)
@@ -90,32 +111,37 @@ def main(mode: str = "daily", day: int | None = None):
         print("[!] 전처리 후 유효한 문서가 없습니다.")
         return
 
-    # ── Phase 3: 키워드 추출 ──
-    print("\n[Phase 3] 키워드 추출")
+    # ── Phase 4: 키워드 추출 ──
+    print("\n[Phase 4] 키워드 추출")
     print("-" * 40)
 
-    # 3-1. TF-IDF
+    # 4-1. TF-IDF
     tfidf_keywords = extract_tfidf_keywords(processed_docs)
     print(f"  TF-IDF 상위 키워드: {[kw for kw, _ in tfidf_keywords[:10]]}...")
 
-    # 3-2. KeyBERT
+    # 4-2. KeyBERT
     candidates = [kw for kw, _ in tfidf_keywords]
     keybert_keywords = extract_keybert_keywords(processed_docs, candidates)
     print(f"  KeyBERT 선정 키워드: {[kw for kw, _ in keybert_keywords[:10]]}...")
 
-    # 3-3. 디자인 적합성 필터링
-    print("\n[Phase 3-3] 디자인 적합성 필터링")
+    # 4-3. 확장 키워드 추출 (명사구 N-gram)
+    extended_keywords = extract_extended_keywords(processed_docs)
+    if extended_keywords:
+        print(f"  확장 키워드 예시: {[kw for kw, _ in extended_keywords[:10]]}...")
+
+    # 4-4. 디자인 적합성 필터링
+    print("\n[Phase 4-4] 디자인 적합성 필터링")
     print("-" * 40)
 
     design_keywords = filter_design_keywords(keybert_keywords)
 
-    # ── Phase 4: 트렌드 분석 + 교차검증 ──
-    print("\n[Phase 4] 트렌드 추이 분석")
+    # ── Phase 5: 트렌드 분석 + 교차검증 ──
+    print("\n[Phase 5] 트렌드 추이 분석")
     print("-" * 40)
 
     gt_keywords = [kw["keyword"] for kw in design_keywords[:30]]
 
-    # 4-1. Google Trends 조회
+    # 5-1. Google Trends 조회
     google_trends_df = None
     if gt_keywords:
         try:
@@ -123,7 +149,7 @@ def main(mode: str = "daily", day: int | None = None):
         except Exception as e:
             print(f"  [WARN] Google Trends 조회 실패: {e}")
 
-    # 4-2. 네이버 데이터랩 - 검색어트렌드
+    # 5-2. 네이버 데이터랩 - 검색어트렌드
     naver_search_df = None
     if gt_keywords:
         try:
@@ -132,7 +158,7 @@ def main(mode: str = "daily", day: int | None = None):
         except Exception as e:
             print(f"  [WARN] 네이버 검색어트렌드 조회 실패: {e}")
 
-    # 4-3. 네이버 데이터랩 - 쇼핑인사이트
+    # 5-3. 네이버 데이터랩 - 쇼핑인사이트
     naver_shopping_df = None
     if gt_keywords:
         try:
@@ -140,13 +166,14 @@ def main(mode: str = "daily", day: int | None = None):
         except Exception as e:
             print(f"  [WARN] 네이버 쇼핑인사이트 조회 실패: {e}")
 
-    # ── Phase 5: 최종 키워드 20개 선정 ──
-    print("\n[Phase 5] 최종 키워드 선정")
+    # ── Phase 6: 최종 키워드 20개 선정 ──
+    print("\n[Phase 6] 최종 키워드 선정")
     print("-" * 40)
 
     final_keywords = analyze_trends(
         processed_docs, design_keywords, google_trends_df,
         naver_search_df, naver_shopping_df,
+        extended_keywords=extended_keywords,
     )
 
     # ── 결과 출력 + 저장 ──
@@ -154,7 +181,7 @@ def main(mode: str = "daily", day: int | None = None):
     _save_results(final_keywords)
 
     # BigQuery에 분석 결과 저장
-    print("\n[Phase 6] 분석 결과 BigQuery 저장")
+    print("\n[Phase 7] 분석 결과 BigQuery 저장")
     print("-" * 40)
     try:
         insert_trend_results(final_keywords)
@@ -170,16 +197,17 @@ def _print_results(keywords: list[dict]):
     print("=" * 70)
     print(f"  최종 트렌드 키워드 TOP {len(keywords)}")
     print("=" * 70)
-    print(f"{'순위':>4} | {'키워드':<14} | {'카테고리':<12} | {'트렌드':>6} | 근거")
-    print("-" * 70)
+    print(f"{'순위':>4} | {'키워드':<12} | {'확장 키워드':<24} | {'카테고리':<12} | {'트렌드':>6} | 근거")
+    print("-" * 90)
 
     for kw in keywords:
+        ext = kw.get("extended_keyword", kw["keyword"])
         print(
-            f"{kw['rank']:>4} | {kw['keyword']:<14} | {kw['category']:<12} "
+            f"{kw['rank']:>4} | {kw['keyword']:<12} | {ext:<24} | {kw['category']:<12} "
             f"| {kw.get('trend_symbol', '→')} {kw['trend']:<4} | {kw['reason']}"
         )
 
-    print("=" * 70)
+    print("=" * 90)
 
     # 카테고리별 분포
     from collections import Counter
@@ -200,12 +228,13 @@ def _save_results(keywords: list[dict]):
     # CSV 저장
     csv_path = output_dir / f"trend_keywords_{timestamp}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=["rank", "keyword", "category", "trend", "reason"])
+        writer = csv.DictWriter(f, fieldnames=["rank", "keyword", "extended_keyword", "category", "trend", "reason"])
         writer.writeheader()
         for kw in keywords:
             writer.writerow({
                 "rank": kw["rank"],
                 "keyword": kw["keyword"],
+                "extended_keyword": kw.get("extended_keyword", kw["keyword"]),
                 "category": kw["category"],
                 "trend": kw["trend"],
                 "reason": kw["reason"],
@@ -219,9 +248,13 @@ def _save_results(keywords: list[dict]):
         f.write(f"생성일: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
         f.write("=" * 50 + "\n\n")
         for kw in keywords:
-            f.write(f"{kw['rank']:>2}. {kw['keyword']} [{kw['category']}] - {kw['trend']}\n")
+            ext = kw.get("extended_keyword", kw["keyword"])
+            f.write(f"{kw['rank']:>2}. {kw['keyword']} → {ext} [{kw['category']}] - {kw['trend']}\n")
         f.write("\n\n키워드 리스트:\n")
         keyword_list = ", ".join(f'"{kw["keyword"]}"' for kw in keywords)
+        f.write(keyword_list + "\n")
+        f.write("\n확장 키워드 리스트:\n")
+        ext_list = ", ".join(f'"{kw.get("extended_keyword", kw["keyword"])}"' for kw in keywords)
         f.write(keyword_list + "\n")
     print(f"  TXT 저장: {txt_path}")
 

@@ -56,11 +56,20 @@ def preprocess_documents(documents: list[dict]) -> list[dict]:
         # 4. 불용어 제거 + 1글자 제거
         tokens = [t for t in tokens if t not in STOPWORDS and len(t) > 1]
 
+        # 5. 연속 명사구 추출 (extended_keyword용)
+        noun_phrases = extract_noun_phrases(kiwi, text)
+        # 불용어 포함 구문 제거
+        noun_phrases = [
+            p for p in noun_phrases
+            if not any(w in STOPWORDS for w in p.split())
+        ]
+
         if tokens:
             date = doc.get("postdate") or doc.get("published_at", "")
             processed.append({
                 "text": raw_text,
                 "tokens": tokens,
+                "noun_phrases": noun_phrases,
                 "date": date[:10] if date else "",
                 "source": doc.get("source", ""),
             })
@@ -95,6 +104,40 @@ def extract_nouns(kiwi: Kiwi, text: str) -> list[str]:
     result = kiwi.tokenize(text)
     nouns = [token.form for token in result if token.tag in ("NNG", "NNP")]
     return nouns
+
+
+def extract_noun_phrases(kiwi: Kiwi, text: str) -> list[str]:
+    """Kiwi로 연속 명사구(2~3어절) 추출.
+
+    형태소 분석 결과에서 연속된 명사(NNG, NNP)를 붙여서
+    복합 표현을 생성합니다.
+    예: "두바이 스타일 초콜릿" → ["두바이 스타일", "스타일 초콜릿", "두바이 스타일 초콜릿"]
+    """
+    result = kiwi.tokenize(text)
+    noun_tags = {"NNG", "NNP"}
+
+    # 연속 명사 그룹 수집
+    groups = []
+    current_group = []
+    for token in result:
+        if token.tag in noun_tags and len(token.form) > 1:
+            current_group.append(token.form)
+        else:
+            if len(current_group) >= 2:
+                groups.append(current_group)
+            current_group = []
+    if len(current_group) >= 2:
+        groups.append(current_group)
+
+    # 각 그룹에서 2-gram, 3-gram 생성
+    phrases = []
+    for group in groups:
+        for n in (2, 3):
+            for i in range(len(group) - n + 1):
+                phrase = " ".join(group[i:i + n])
+                phrases.append(phrase)
+
+    return phrases
 
 
 def _split_sentences(text: str) -> list[str]:

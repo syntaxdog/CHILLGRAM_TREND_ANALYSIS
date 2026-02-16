@@ -92,6 +92,75 @@ def extract_keybert_keywords(
     return keywords
 
 
+def extract_extended_keywords(
+    processed_docs: list[dict], top_n: int = TFIDF_TOP_N
+) -> list[tuple[str, float]]:
+    """전처리된 문서의 noun_phrases에서 TF-IDF로 상위 확장 키워드 추출.
+
+    Args:
+        processed_docs: 전처리된 문서 리스트 [{"noun_phrases": [...], ...}]
+        top_n: 상위 몇 개 추출
+
+    Returns:
+        [(확장 키워드, TF-IDF 점수), ...] 상위 top_n개
+    """
+    if not processed_docs:
+        return []
+
+    # 각 문서의 noun_phrases를 하나의 문자열로 연결
+    corpus = []
+    for doc in processed_docs:
+        phrases = doc.get("noun_phrases", [])
+        if phrases:
+            corpus.append(" | ".join(phrases))
+        else:
+            corpus.append("")
+
+    # 빈 문서만 있으면 빈 결과 반환
+    if not any(corpus):
+        print("  [Extended TF-IDF] 명사구 데이터가 없습니다")
+        return []
+
+    vectorizer = TfidfVectorizer(
+        max_features=3000,
+        min_df=2,
+        max_df=0.8,
+        analyzer="word",
+        token_pattern=r"[가-힣a-zA-Z0-9]+(?:\s[가-힣a-zA-Z0-9]+)*",
+    )
+
+    # "|" 구분자를 활용해 각 구문을 독립 토큰으로 처리
+    # 대신 CountVectorizer 방식으로 직접 빈도 계산
+    from collections import Counter
+    phrase_counter = Counter()
+    doc_freq = Counter()
+
+    for doc in processed_docs:
+        phrases = doc.get("noun_phrases", [])
+        seen = set()
+        for p in phrases:
+            phrase_counter[p] += 1
+            if p not in seen:
+                doc_freq[p] += 1
+                seen.add(p)
+
+    n_docs = len(processed_docs)
+    import math
+    scored = []
+    for phrase, count in phrase_counter.items():
+        df = doc_freq[phrase]
+        if df < 2 or df > n_docs * 0.8:
+            continue
+        tfidf = count * math.log(n_docs / (1 + df))
+        scored.append((phrase, tfidf))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:top_n]
+
+    print(f"  [Extended TF-IDF] 상위 {len(top)}개 확장 키워드 추출 완료")
+    return top
+
+
 def _deduplicate(keywords: list[tuple[str, float]]) -> list[tuple[str, float]]:
     """포함 관계에 있는 유사 키워드 중복 제거 (긴 쪽 유지)"""
     result = []

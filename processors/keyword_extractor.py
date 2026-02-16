@@ -66,8 +66,16 @@ def extract_keybert_keywords(
         print("[WARN] keybert 미설치 - TF-IDF 결과만 사용합니다")
         return [(kw, 0.0) for kw in candidates[:top_n]]
 
-    # 전체 문서를 하나의 큰 텍스트로 합침
-    full_text = " ".join(" ".join(doc["tokens"]) for doc in processed_docs)
+    # 명사구(2~3어절)를 후보에 추가 — 긴 키워드 확보
+    phrase_candidates = _collect_noun_phrase_candidates(processed_docs)
+    combined_candidates = list(dict.fromkeys(candidates + phrase_candidates))
+    print(f"  [KeyBERT] 후보: 단일어 {len(candidates)}개 + 명사구 {len(phrase_candidates)}개 = {len(combined_candidates)}개")
+
+    # 전체 문서를 하나의 큰 텍스트로 합침 (명사구 포함)
+    full_text = " ".join(
+        " ".join(doc["tokens"]) + " " + " ".join(doc.get("noun_phrases", []))
+        for doc in processed_docs
+    )
 
     print("  [KeyBERT] 모델 로딩 중 (ko-sroberta-multitask)...")
     try:
@@ -79,7 +87,7 @@ def extract_keybert_keywords(
     # KeyBERT로 후보 중 최적 키워드 선정
     keywords = kw_model.extract_keywords(
         full_text,
-        candidates=candidates,
+        candidates=combined_candidates,
         top_n=top_n,
         use_mmr=True,
         diversity=diversity,
@@ -90,6 +98,35 @@ def extract_keybert_keywords(
 
     print(f"  [KeyBERT] {len(keywords)}개 키워드 선정 완료")
     return keywords
+
+
+def _collect_noun_phrase_candidates(
+    processed_docs: list[dict], min_doc_freq: int = 2, max_phrases: int = 100
+) -> list[str]:
+    """문서들에서 빈출 명사구를 후보로 수집."""
+    from collections import Counter
+
+    phrase_counter = Counter()
+    doc_freq = Counter()
+
+    for doc in processed_docs:
+        phrases = doc.get("noun_phrases", [])
+        seen = set()
+        for p in phrases:
+            phrase_counter[p] += 1
+            if p not in seen:
+                doc_freq[p] += 1
+                seen.add(p)
+
+    # 최소 min_doc_freq개 문서에 등장하는 것만
+    qualified = [
+        (phrase, count)
+        for phrase, count in phrase_counter.items()
+        if doc_freq[phrase] >= min_doc_freq
+    ]
+    qualified.sort(key=lambda x: x[1], reverse=True)
+
+    return [phrase for phrase, _ in qualified[:max_phrases]]
 
 
 def extract_extended_keywords(

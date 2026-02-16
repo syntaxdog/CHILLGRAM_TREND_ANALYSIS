@@ -30,8 +30,8 @@ COLLECT_LIMITS = {
 BACKFILL_TOTAL_DAYS = 4
 
 # === 키워드 추출 제한 ===
-TFIDF_TOP_N = 100
-KEYBERT_TOP_N = 50
+TFIDF_TOP_N = 150
+KEYBERT_TOP_N = 80
 FINAL_KEYWORD_COUNT = 20
 
 # === 트렌드 판정 임계값 ===

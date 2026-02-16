@@ -73,19 +73,36 @@ def _map_extended_keywords(
 ) -> None:
     """각 최종 키워드에 대해 가장 관련도 높은 확장 키워드를 매핑.
 
-    기존 keyword를 포함하는 확장 구문 중 TF-IDF 점수가 가장 높은 것을 선택.
+    매칭 우선순위:
+    1. 키워드가 이미 2어절 이상이면 그대로 사용
+    2. 확장 구문의 토큰에 정확히 포함 (예: "말차" → "말차 라떼")
+    3. 확장 구문에 부분 문자열로 포함 (예: "초콜릿" → "두바이 초콜릿")
     """
     for kw in final_keywords:
         word = kw["keyword"]
+
+        # 이미 2어절 이상이면 그대로
+        if " " in word:
+            kw["extended_keyword"] = word
+            continue
+
         best_phrase = None
         best_score = -1
+        best_priority = 99  # 낮을수록 우선
 
         for phrase, score in extended_keywords:
-            # 확장 구문에 기존 키워드가 포함되어 있는지 확인
+            # 1순위: 토큰 정확 매치
             if word in phrase.split():
-                if score > best_score:
+                if best_priority > 1 or score > best_score:
                     best_phrase = phrase
                     best_score = score
+                    best_priority = 1
+            # 2순위: 부분 문자열 포함
+            elif word in phrase:
+                if best_priority > 2 or (best_priority == 2 and score > best_score):
+                    best_phrase = phrase
+                    best_score = score
+                    best_priority = 2
 
         kw["extended_keyword"] = best_phrase if best_phrase else word
 

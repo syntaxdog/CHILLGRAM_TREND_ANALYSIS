@@ -236,60 +236,134 @@ def _compute_recency_scores(
 
 def _verify_with_google_trends(
     keywords: list[dict], gt_df: pd.DataFrame | None
-) -> set[str]:
-    """Google Trends 데이터로 검증된 키워드 set 반환"""
-    if gt_df is None or gt_df.empty:
-        return {kw["keyword"] for kw in keywords}
+) -> dict[str, float]:
+    """Google Trends 데이터로 키워드별 외부 트렌드 점수 반환 (0.0~1.0).
 
-    verified = set()
+    최근 구간 대비 전체 평균의 상승률을 점수화:
+    - 최근 급상승 → 1.0에 가까움
+    - 평이 → 0.5
+    - 데이터 없음 → 0.5 (중립)
+    """
+    neutral = {kw["keyword"]: 0.5 for kw in keywords}
+    if gt_df is None or gt_df.empty:
+        return neutral
+
+    scores = {}
+    n_rows = len(gt_df)
+    # 최근 25% 구간 vs 전체
+    recent_n = max(n_rows // 4, 1)
+
     for kw in keywords:
         word = kw["keyword"]
-        if word in gt_df.columns:
-            series = gt_df[word]
-            if series.mean() >= 10:
-                verified.add(word)
-        else:
-            verified.add(word)
+        if word not in gt_df.columns:
+            scores[word] = 0.5
+            continue
 
-    return verified
+        series = gt_df[word].dropna()
+        if series.empty:
+            scores[word] = 0.5
+            continue
+
+        overall_avg = series.mean()
+        recent_avg = series.iloc[-recent_n:].mean()
+
+        if overall_avg < 5:
+            # 검색량 자체가 미미 → 낮은 점수
+            scores[word] = 0.2
+            continue
+
+        # 상승률 계산: recent / overall
+        if overall_avg > 0:
+            ratio = recent_avg / overall_avg
+        else:
+            ratio = 1.0
+
+        # ratio → 점수 변환 (1.0=평이, 2.0+=폭발)
+        if ratio >= 2.0:
+            scores[word] = 1.0
+        elif ratio >= 1.5:
+            scores[word] = 0.85
+        elif ratio >= 1.2:
+            scores[word] = 0.7
+        elif ratio >= 0.8:
+            scores[word] = 0.5
+        else:
+            scores[word] = 0.2  # 하락세
+
+    print(f"  [Google Trends] 스코어링: 상승 {sum(1 for v in scores.values() if v >= 0.7)}개, "
+          f"안정 {sum(1 for v in scores.values() if 0.3 <= v < 0.7)}개, "
+          f"하락 {sum(1 for v in scores.values() if v < 0.3)}개")
+    return scores
 
 
 def _verify_with_naver_datalab(
     keywords: list[dict],
     search_df: pd.DataFrame | None,
     shopping_df: pd.DataFrame | None,
-) -> set[str]:
-    """네이버 데이터랩 데이터로 검증된 키워드 set 반환"""
-    verified = set()
+) -> dict[str, float]:
+    """네이버 데이터랩으로 키워드별 외부 트렌드 점수 반환 (0.0~1.0).
+
+    검색어트렌드 + 쇼핑인사이트 두 소스 중 높은 점수를 채택.
+    """
+    neutral = {kw["keyword"]: 0.5 for kw in keywords}
+
+    if search_df is None and shopping_df is None:
+        return neutral
+
+    scores = {}
 
     for kw in keywords:
         word = kw["keyword"]
-        found = False
+        best_score = 0.5  # 데이터 없으면 중립
 
-        if search_df is not None and not search_df.empty and word in search_df.columns:
-            if search_df[word].mean() >= 5:
-                found = True
+        for df in [search_df, shopping_df]:
+            if df is None or df.empty or word not in df.columns:
+                continue
 
-        if shopping_df is not None and not shopping_df.empty and word in shopping_df.columns:
-            if shopping_df[word].mean() >= 5:
-                found = True
+            series = df[word].dropna()
+            if series.empty:
+                continue
 
-        if found:
-            verified.add(word)
-        elif search_df is None and shopping_df is None:
-            verified.add(word)
+            overall_avg = series.mean()
+            recent_n = max(len(series) // 4, 1)
+            recent_avg = series.iloc[-recent_n:].mean()
 
-    return verified
+            if overall_avg < 3:
+                score = 0.2
+            elif overall_avg > 0:
+                ratio = recent_avg / overall_avg
+                if ratio >= 2.0:
+                    score = 1.0
+                elif ratio >= 1.5:
+                    score = 0.85
+                elif ratio >= 1.2:
+                    score = 0.7
+                elif ratio >= 0.8:
+                    score = 0.5
+                else:
+                    score = 0.2
+            else:
+                score = 0.5
+
+            best_score = max(best_score, score)
+
+        scores[word] = best_score
+
+    rising = sum(1 for v in scores.values() if v >= 0.7)
+    print(f"  [네이버 데이터랩] 스코어링: 상승 {rising}개, "
+          f"안정 {sum(1 for v in scores.values() if 0.3 <= v < 0.7)}개, "
+          f"하락 {sum(1 for v in scores.values() if v < 0.3)}개")
+    return scores
 
 
 def _compute_final_scores(
     keywords: list[dict],
     trends: dict[str, str],
     recency_scores: dict[str, float],
-    google_verified: set[str],
-    naver_verified: set[str] | None = None,
+    google_trend_scores: dict[str, float],
+    naver_trend_scores: dict[str, float] | None = None,
 ) -> list[dict]:
-    """가중 점수 계산 (계절성 보정 반영)"""
+    """가중 점수 계산 — 외부 트렌드(구글/네이버) 상승률 직접 반영"""
     well_known = set()
     for examples in DESIGN_CATEGORIES.values():
         well_known.update(examples[:3])
@@ -300,15 +374,20 @@ def _compute_final_scores(
         trend = trends.get(word, "안정")
         recency = recency_scores.get(word, 0.5)
 
-        # 트렌드 점수 — "시즌"은 안정과 상승 사이
-        trend_score = {
+        # 내부 트렌드 점수 (수집 문서 기반)
+        internal_trend = {
             "상승": 1.0, "시즌": 0.6, "안정": 0.5, "하강": 0.1
         }.get(trend, 0.5)
 
-        if word not in google_verified:
-            trend_score *= 0.7
-        if naver_verified and word in naver_verified:
-            trend_score = min(trend_score * 1.2, 1.0)
+        # 외부 트렌드 점수 (구글 + 네이버 실제 상승률)
+        google_score = google_trend_scores.get(word, 0.5)
+        naver_score = naver_trend_scores.get(word, 0.5) if naver_trend_scores else 0.5
+
+        # 외부 트렌드: 구글/네이버 중 높은 쪽 채택
+        external_trend = max(google_score, naver_score)
+
+        # 내부(40%) + 외부(60%) 블렌딩 → 외부 폭발 키워드가 순위 올라옴
+        trend_score = internal_trend * 0.4 + external_trend * 0.6
 
         recency_score = recency
         design_score = min(kw["score"] / 0.1, 1.0) if kw["score"] > 0 else 0.5
@@ -330,10 +409,10 @@ def _compute_final_scores(
         reason = f"트렌드 {trend_symbol} {trend}"
         if recency >= 0.7:
             reason += " + 최근급증"
-        if word in google_verified and trend in ("상승", "시즌"):
-            reason += " + Google검증"
-        if naver_verified and word in naver_verified:
-            reason += " + 네이버검증"
+        if google_score >= 0.7:
+            reason += f" + Google급상승({google_score:.1f})"
+        if naver_score >= 0.7:
+            reason += f" + 네이버급상승({naver_score:.1f})"
 
         scored.append({
             "keyword": word,

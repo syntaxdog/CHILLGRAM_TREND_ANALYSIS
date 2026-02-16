@@ -183,7 +183,9 @@ def get_shopping_keywords_trend(keywords: list[str], category_id: str = "5000000
             "endDate": end_date,
             "timeUnit": "month",
             "category": category_id,
-            "keyword": batch,
+            "keyword": [
+                {"name": kw, "param": [kw]} for kw in batch
+            ],
             "device": "",
             "gender": "",
             "ages": [],

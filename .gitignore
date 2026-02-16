@@ -7,3 +7,5 @@ output/*.txt
 output/raw_data_*.json
 output/trend_keywords_*.json
 .venv/
+CLAUDE.md
+명령어 모음.txt

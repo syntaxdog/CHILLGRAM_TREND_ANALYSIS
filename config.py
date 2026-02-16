@@ -22,8 +22,8 @@ ANALYSIS_PERIOD_MONTHS = 12
 
 # === 수집 설정 (모드별) ===
 COLLECT_LIMITS = {
-    "backfill": {"naver": 1000, "youtube": 200},
-    "daily":    {"naver": 100,  "youtube": 30},
+    "backfill": {"naver": 1000, "youtube": 200, "instagram": 200},
+    "daily":    {"naver": 100,  "youtube": 30,  "instagram": 50},
 }
 
 # === 백필 분할 (4일) ===

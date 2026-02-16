@@ -8,6 +8,7 @@
     python main.py                  # 일일 크롤링 모드
     python main.py --backfill       # 12개월 백필 (전체)
     python main.py --backfill --day 1  # 백필 1일차 (쿼리 분할)
+    python main.py --analyze-only   # 수집 없이 BigQuery 데이터만으로 분석
 """
 
 import argparse
@@ -32,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from collectors.naver_blog import collect_naver_blogs
 from collectors.youtube import collect_youtube
+from collectors.instagram import collect_instagram
 from collectors.google_trends import get_google_trends
 from collectors.naver_datalab import get_search_trend, get_shopping_keywords_trend
 from processors.preprocessor import preprocess_documents
@@ -45,61 +47,64 @@ from config import (
 )
 
 
-def main(mode: str = "daily", day: int | None = None):
+def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False):
     print("=" * 60)
     print("  식품 패키지 디자인 트렌드 키워드 추출 파이프라인")
     print("=" * 60)
     print(f"  타겟 제품군: {TARGET_PRODUCT}")
     print(f"  타겟 소비자: {TARGET_CONSUMER}")
-    print(f"  실행 모드: {mode}" + (f" (day {day}/{BACKFILL_TOTAL_DAYS})" if day else ""))
+    if analyze_only:
+        print(f"  실행 모드: analyze-only (수집 없이 BigQuery 전체 분석)")
+    else:
+        print(f"  실행 모드: {mode}" + (f" (day {day}/{BACKFILL_TOTAL_DAYS})" if day else ""))
     print(f"  실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    # ── Phase 1: 데이터 수집 ──
-    print("\n[Phase 1] 데이터 수집")
-    print("-" * 40)
+    if not analyze_only:
+        # ── Phase 1: 데이터 수집 ──
+        print("\n[Phase 1] 데이터 수집")
+        print("-" * 40)
 
-    search_queries = get_search_queries(mode, day=day)
-    print(f"  검색 쿼리 {len(search_queries)}개 사용 (모드: {mode})")
+        search_queries = get_search_queries(mode, day=day)
+        print(f"  검색 쿼리 {len(search_queries)}개 사용 (모드: {mode})")
 
-    naver_data = collect_naver_blogs(search_queries, mode=mode)
-    youtube_data = collect_youtube(search_queries, mode=mode)
+        naver_data = collect_naver_blogs(search_queries, mode=mode)
+        youtube_data = collect_youtube(search_queries, mode=mode)
+        instagram_data = collect_instagram(search_queries, mode=mode)
 
-    all_documents = naver_data + youtube_data
-    print(f"\n  총 수집 문서: {len(all_documents)}건")
+        all_documents = naver_data + youtube_data + instagram_data
+        print(f"\n  총 수집 문서: {len(all_documents)}건")
 
-    # 원본 수집 데이터 저장 (로컬 + GCP)
-    if all_documents:
-        _save_raw_data(naver_data, youtube_data)
-        _save_to_gcp(naver_data, youtube_data)
+        # 원본 수집 데이터 저장 (GCP만)
+        if all_documents:
+            _save_to_gcp(naver_data, youtube_data, instagram_data)
 
-    if not all_documents:
-        print("\n[!] 수집된 데이터가 없습니다.")
-        print("    .env 파일에 API 키를 설정해주세요.")
-        print("    (.env.example 파일을 참고하세요)")
+        if not all_documents:
+            print("\n[!] 수집된 데이터가 없습니다.")
+            print("    .env 파일에 API 키를 설정해주세요.")
+            print("    (.env.example 파일을 참고하세요)")
+            if mode == "backfill":
+                print("\n    backfill 모드: 수집할 데이터가 없어 종료합니다.")
+                return
+            print("\n    데모 모드로 실행합니다...\n")
+            all_documents = _generate_demo_data()
+
+        # ── backfill 모드: 수집 + 저장만 하고 종료 ──
         if mode == "backfill":
-            print("\n    backfill 모드: 수집할 데이터가 없어 종료합니다.")
+            print("\n[backfill] 수집 + 저장 완료. 분석은 --analyze-only로 실행하세요.")
+            print("완료!")
             return
-        print("\n    데모 모드로 실행합니다...\n")
-        all_documents = _generate_demo_data()
 
-    # ── backfill 모드: 수집 + 저장만 하고 종료 ──
-    if mode == "backfill":
-        print("\n[backfill] 수집 + 저장 완료. 분석은 daily 모드에서 전체 데이터로 실행됩니다.")
-        print("완료!")
-        return
-
-    # ── daily 모드: BigQuery에서 전체 데이터 로드 후 분석 ──
+    # ── BigQuery에서 전체 데이터 로드 후 분석 ──
     print("\n[Phase 2] BigQuery 전체 데이터 로드")
     print("-" * 40)
 
-    historical_docs = load_all_raw_contents()
-    if historical_docs:
-        # 오늘 수집분과 합치지 않음 — BigQuery에 이미 INSERT됨
-        all_documents = historical_docs
+    all_documents = load_all_raw_contents()
+    if all_documents:
         print(f"  BigQuery 전체 데이터 {len(all_documents)}건으로 분석 실행")
     else:
-        print("  [WARN] BigQuery 데이터 로드 실패 — 오늘 수집분만으로 분석")
+        print("  [ERR] BigQuery 데이터 로드 실패")
+        return
 
     # ── Phase 3: 전처리 ──
     print("\n[Phase 3] 전처리")
@@ -259,8 +264,10 @@ def _save_results(keywords: list[dict]):
     print(f"  TXT 저장: {txt_path}")
 
 
-def _save_raw_data(naver_data: list[dict], youtube_data: list[dict]):
+def _save_raw_data(naver_data: list[dict], youtube_data: list[dict], instagram_data: list[dict] = None):
     """수집된 원본 데이터를 파일로 저장"""
+    if instagram_data is None:
+        instagram_data = []
     output_dir = Path(__file__).parent / "output"
     output_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -271,16 +278,18 @@ def _save_raw_data(naver_data: list[dict], youtube_data: list[dict]):
         "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "naver_blog_count": len(naver_data),
         "youtube_count": len(youtube_data),
-        "total_count": len(naver_data) + len(youtube_data),
+        "instagram_count": len(instagram_data),
+        "total_count": len(naver_data) + len(youtube_data) + len(instagram_data),
         "naver_blog": naver_data,
         "youtube": youtube_data,
+        "instagram": instagram_data,
     }
     with open(raw_path, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
 
     # CSV로도 저장 (엑셀에서 바로 열 수 있게)
     csv_path = output_dir / f"raw_data_{timestamp}.csv"
-    all_docs = naver_data + youtube_data
+    all_docs = naver_data + youtube_data + instagram_data
     if all_docs:
         fieldnames = ["source", "title", "description", "date", "link", "query"]
         with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -302,8 +311,10 @@ def _save_raw_data(naver_data: list[dict], youtube_data: list[dict]):
     print(f"    CSV:  {csv_path}")
 
 
-def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict]):
+def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict], instagram_data: list[dict] = None):
     """수집 데이터를 GCS 백업 + BigQuery INSERT"""
+    if instagram_data is None:
+        instagram_data = []
     print("\n  [GCP 저장]")
 
     # GCS 백업
@@ -312,12 +323,14 @@ def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict]):
             upload_to_gcs(naver_data, "naver")
         if youtube_data:
             upload_to_gcs(youtube_data, "youtube")
+        if instagram_data:
+            upload_to_gcs(instagram_data, "instagram")
     except Exception as e:
         print(f"  [WARN] GCS 업로드 실패: {e}")
 
     # BigQuery INSERT (중복 제외)
     try:
-        all_docs = naver_data + youtube_data
+        all_docs = naver_data + youtube_data + instagram_data
         insert_raw_contents(all_docs)
     except Exception as e:
         print(f"  [WARN] BigQuery INSERT 실패: {e}")
@@ -374,11 +387,19 @@ if __name__ == "__main__":
         default=None,
         help=f"백필 분할 실행 일차 (1~{BACKFILL_TOTAL_DAYS}). YouTube 쿼터 분산용.",
     )
+    parser.add_argument(
+        "--analyze-only",
+        action="store_true",
+        help="수집 없이 BigQuery 전체 데이터만으로 트렌드 분석 실행",
+    )
     args = parser.parse_args()
 
-    run_mode = "backfill" if args.backfill else "daily"
+    if args.analyze_only:
+        main(mode="daily", analyze_only=True)
+    else:
+        run_mode = "backfill" if args.backfill else "daily"
 
-    if args.day and not args.backfill:
-        parser.error("--day는 --backfill과 함께 사용해야 합니다.")
+        if args.day and not args.backfill:
+            parser.error("--day는 --backfill과 함께 사용해야 합니다.")
 
-    main(mode=run_mode, day=args.day)
+        main(mode=run_mode, day=args.day)

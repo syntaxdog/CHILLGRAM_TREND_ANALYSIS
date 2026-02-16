@@ -71,11 +71,18 @@ def extract_keybert_keywords(
     combined_candidates = list(dict.fromkeys(candidates + phrase_candidates))
     print(f"  [KeyBERT] 후보: 단일어 {len(candidates)}개 + 명사구 {len(phrase_candidates)}개 = {len(combined_candidates)}개")
 
-    # 전체 문서를 하나의 큰 텍스트로 합침 (명사구 포함)
-    full_text = " ".join(
-        " ".join(doc["tokens"]) + " " + " ".join(doc.get("noun_phrases", []))
-        for doc in processed_docs
-    )
+    # 전체 문서를 하나의 텍스트로 합침 (메모리 제한: 최대 50,000자)
+    MAX_TEXT_LEN = 50000
+    parts = []
+    current_len = 0
+    for doc in processed_docs:
+        part = " ".join(doc["tokens"]) + " " + " ".join(doc.get("noun_phrases", []))
+        if current_len + len(part) > MAX_TEXT_LEN:
+            break
+        parts.append(part)
+        current_len += len(part)
+    full_text = " ".join(parts)
+    print(f"  [KeyBERT] 텍스트 길이: {len(full_text):,}자 ({len(parts)}/{len(processed_docs)}문서 사용)")
 
     print("  [KeyBERT] 모델 로딩 중 (ko-sroberta-multitask)...")
     try:

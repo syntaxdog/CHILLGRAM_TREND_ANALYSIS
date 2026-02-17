@@ -224,6 +224,27 @@ def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False
     except Exception as e:
         print(f"  [WARN] GCS 결과 저장 실패: {e}")
 
+    # ── Phase 8: 시각화 차트 생성 + GCS 업로드 ──
+    print("\n[Phase 8] 시각화 차트 생성")
+    print("-" * 40)
+    try:
+        from visualize import (
+            chart_top_keywords, chart_category_distribution,
+            chart_trend_direction, chart_wordcloud, _upload_charts_to_gcs,
+        )
+        charts_dir = Path(__file__).parent / "output" / "charts"
+        charts_dir.mkdir(parents=True, exist_ok=True)
+
+        chart_top_keywords(final_keywords, charts_dir)
+        chart_category_distribution(final_keywords, charts_dir)
+        chart_trend_direction(final_keywords, charts_dir)
+        chart_wordcloud(final_keywords, charts_dir)
+
+        chart_files = list(charts_dir.glob("*.png"))
+        _upload_charts_to_gcs(chart_files)
+    except Exception as e:
+        print(f"  [WARN] 시각화 실패: {e}")
+
     print("\n완료!")
 
 

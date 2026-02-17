@@ -191,14 +191,22 @@ def insert_raw_contents(documents: list[dict]) -> int:
 
     client = get_bq_client()
     table_ref = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE_RAW}"
-    errors = client.insert_rows_json(table_ref, rows)
 
-    if errors:
-        print(f"  [BigQuery] INSERT 에러: {errors[:3]}")
-        return 0
+    # 500건씩 배치 분할 INSERT (대량 데이터 타임아웃 방지)
+    BATCH_SIZE = 500
+    inserted = 0
+    for i in range(0, len(rows), BATCH_SIZE):
+        batch = rows[i : i + BATCH_SIZE]
+        errors = client.insert_rows_json(table_ref, batch)
+        if errors:
+            print(f"  [BigQuery] INSERT 에러 (batch {i // BATCH_SIZE + 1}): {errors[:3]}")
+        else:
+            inserted += len(batch)
+            print(f"  [BigQuery] batch {i // BATCH_SIZE + 1}: {len(batch)}건 INSERT 완료")
 
-    print(f"  [BigQuery] {len(rows)}건 INSERT 완료 (중복 {len(documents) - len(rows)}건 제외)")
-    return len(rows)
+    skipped = len(documents) - len(rows)
+    print(f"  [BigQuery] 총 {inserted}/{len(rows)}건 INSERT 완료 (중복 {skipped}건 제외)")
+    return inserted
 
 
 def insert_trend_results(keywords: list[dict]) -> int:
@@ -256,8 +264,8 @@ def upload_trend_results_to_gcs(keywords: list[dict]) -> str:
     """분석 결과를 GCS에 JSON으로 저장 (latest + 날짜별 히스토리).
 
     저장 경로:
-        - gs://bucket/results/latest/trend_keywords.json  (항상 최신, 웹 fetch용)
-        - gs://bucket/results/history/2026-02-17.json      (날짜별 히스토리)
+        - gs://bucket/results/latest/trend_keywords.json           (항상 최신, 웹 fetch용)
+        - gs://bucket/results/history/2026-02-17/trend_keywords.json (날짜별 히스토리)
 
     Returns:
         latest 파일의 gs:// 경로
@@ -296,10 +304,10 @@ def upload_trend_results_to_gcs(keywords: list[dict]) -> str:
     latest_path = f"gs://{GCS_BUCKET}/results/latest/trend_keywords.json"
 
     # 2. history (날짜별 보관)
-    history_blob = bucket.blob(f"results/history/{today}.json")
+    history_blob = bucket.blob(f"results/history/{today}/trend_keywords.json")
     history_blob.upload_from_string(json_str, content_type="application/json")
 
     print(f"  [GCS] 트렌드 결과 업로드 완료")
     print(f"    latest:  {latest_path}")
-    print(f"    history: gs://{GCS_BUCKET}/results/history/{today}.json")
+    print(f"    history: gs://{GCS_BUCKET}/results/history/{today}/trend_keywords.json")
     return latest_path

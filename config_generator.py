@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 OUTPUT_DIR = Path(__file__).parent / "output"
-CONFIG_PATH = OUTPUT_DIR / "domain_config.json"
+CONFIG_PATH = OUTPUT_DIR / "domain_configs.json"
 
 GEMINI_MODEL = "gemini-3-flash-preview"
 

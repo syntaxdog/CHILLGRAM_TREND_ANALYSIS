@@ -5,12 +5,15 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from config import TFIDF_TOP_N, KEYBERT_TOP_N
 
 
-def extract_tfidf_keywords(processed_docs: list[dict], top_n: int = TFIDF_TOP_N) -> list[tuple[str, float]]:
+def extract_tfidf_keywords(
+    processed_docs: list[dict], top_n: int = TFIDF_TOP_N, min_df: int = 2
+) -> list[tuple[str, float]]:
     """TF-IDF로 상위 키워드 추출.
 
     Args:
         processed_docs: 전처리된 문서 리스트 [{"tokens": [...], ...}]
         top_n: 상위 몇 개 추출
+        min_df: 최소 문서 빈도 (최근 윈도우처럼 문서 수가 적을 때 1로 설정)
 
     Returns:
         [(키워드, TF-IDF 점수), ...] 상위 top_n개
@@ -23,7 +26,7 @@ def extract_tfidf_keywords(processed_docs: list[dict], top_n: int = TFIDF_TOP_N)
 
     vectorizer = TfidfVectorizer(
         max_features=5000,
-        min_df=2,        # 최소 2개 문서에 등장
+        min_df=min_df,   # 최소 문서 빈도 (최근 데이터용으로 1 가능)
         max_df=0.8,      # 80% 이상 문서에 등장하면 제외
     )
 

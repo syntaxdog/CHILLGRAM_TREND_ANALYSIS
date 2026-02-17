@@ -202,7 +202,7 @@ def insert_raw_contents(documents: list[dict]) -> int:
 
 
 def insert_trend_results(keywords: list[dict]) -> int:
-    """분석 결과를 BigQuery trend_results에 INSERT.
+    """분석 결과를 BigQuery trend_results에 INSERT (같은 날짜 기존 데이터 삭제 후).
 
     Args:
         keywords: 최종 키워드 리스트 [{"rank", "keyword", "category", "trend", ...}]
@@ -214,6 +214,20 @@ def insert_trend_results(keywords: list[dict]) -> int:
         return 0
 
     today = date.today().isoformat()
+    client = get_bq_client()
+    table_ref = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE_RESULTS}"
+
+    # 같은 날짜 기존 결과 삭제 (중복 방지)
+    delete_query = f"""
+        DELETE FROM `{table_ref}`
+        WHERE analysis_date = '{today}'
+    """
+    try:
+        client.query(delete_query).result()
+        print(f"  [BigQuery] 기존 {today} 결과 삭제 완료")
+    except Exception as e:
+        print(f"  [BigQuery] 기존 결과 삭제 실패 (첫 실행?): {e}")
+
     rows = []
     for kw in keywords:
         rows.append({
@@ -228,13 +242,64 @@ def insert_trend_results(keywords: list[dict]) -> int:
             "reason": kw.get("reason", ""),
         })
 
-    client = get_bq_client()
-    table_ref = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE_RESULTS}"
     errors = client.insert_rows_json(table_ref, rows)
 
     if errors:
         print(f"  [BigQuery] 결과 INSERT 에러: {errors[:3]}")
         return 0
 
-    print(f"  [BigQuery] 분석 결과 {len(rows)}건 INSERT 완료")
+    print(f"  [BigQuery] 분석 결과 {len(rows)}건 INSERT 완료 (날짜: {today})")
     return len(rows)
+
+
+def upload_trend_results_to_gcs(keywords: list[dict]) -> str:
+    """분석 결과를 GCS에 JSON으로 저장 (latest + 날짜별 히스토리).
+
+    저장 경로:
+        - gs://bucket/results/latest/trend_keywords.json  (항상 최신, 웹 fetch용)
+        - gs://bucket/results/history/2026-02-17.json      (날짜별 히스토리)
+
+    Returns:
+        latest 파일의 gs:// 경로
+    """
+    if not keywords:
+        return ""
+
+    today = date.today().isoformat()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    payload = {
+        "analysis_date": today,
+        "updated_at": now,
+        "count": len(keywords),
+        "keywords": [
+            {
+                "rank": kw.get("rank", 0),
+                "keyword": kw.get("keyword", ""),
+                "extended_keyword": kw.get("extended_keyword", kw.get("keyword", "")),
+                "category": kw.get("category", ""),
+                "trend": kw.get("trend", ""),
+                "score": round(kw.get("final_score", 0.0), 4),
+                "reason": kw.get("reason", ""),
+            }
+            for kw in keywords
+        ],
+    }
+
+    json_str = json.dumps(payload, ensure_ascii=False, indent=2)
+    client = get_gcs_client()
+    bucket = client.bucket(GCS_BUCKET)
+
+    # 1. latest (웹에서 항상 이 경로로 fetch)
+    latest_blob = bucket.blob("results/latest/trend_keywords.json")
+    latest_blob.upload_from_string(json_str, content_type="application/json")
+    latest_path = f"gs://{GCS_BUCKET}/results/latest/trend_keywords.json"
+
+    # 2. history (날짜별 보관)
+    history_blob = bucket.blob(f"results/history/{today}.json")
+    history_blob.upload_from_string(json_str, content_type="application/json")
+
+    print(f"  [GCS] 트렌드 결과 업로드 완료")
+    print(f"    latest:  {latest_path}")
+    print(f"    history: gs://{GCS_BUCKET}/results/history/{today}.json")
+    return latest_path

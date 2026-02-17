@@ -39,6 +39,12 @@ TREND_RISING_THRESHOLD = 1.5
 TREND_FALLING_THRESHOLD = 0.5
 SEASONAL_TOLERANCE = 0.3  # 계절 키워드는 1.5 + 0.3 = 1.8 이상이어야 상승
 
+# === 2트랙 블렌딩 설정 ===
+RECENT_WINDOW_DAYS = 7       # 최근 윈도우 기간 (일)
+BLEND_RECENT_WEIGHT = 0.6    # 최근 트랙 가중치
+BLEND_FULL_WEIGHT = 0.4      # 전체 트랙 가중치
+RECENT_MIN_DOCS = 10         # 최근 문서 최소 수 (미달 시 전체 데이터만 사용)
+
 # === 스코어링 가중치 ===
 WEIGHT_TREND = 0.30
 WEIGHT_RECENCY = 0.20

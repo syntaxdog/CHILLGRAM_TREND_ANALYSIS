@@ -17,7 +17,7 @@ import json
 import os
 import random
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,10 +40,12 @@ from processors.preprocessor import preprocess_documents
 from processors.keyword_extractor import extract_tfidf_keywords, extract_keybert_keywords, extract_extended_keywords
 from processors.design_filter import filter_design_keywords
 from analyzers.trend_analyzer import analyze_trends
-from storage.gcp_client import upload_to_gcs, insert_raw_contents, insert_trend_results, load_all_raw_contents
+from storage.gcp_client import upload_to_gcs, insert_raw_contents, insert_trend_results, load_all_raw_contents, upload_trend_results_to_gcs
 from config import (
     TARGET_PRODUCT, TARGET_CONSUMER, FINAL_KEYWORD_COUNT,
     DESIGN_CATEGORIES, BACKFILL_TOTAL_DAYS, get_search_queries,
+    RECENT_WINDOW_DAYS, BLEND_RECENT_WEIGHT, BLEND_FULL_WEIGHT, RECENT_MIN_DOCS,
+    KEYBERT_TOP_N,
 )
 
 
@@ -116,20 +118,44 @@ def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False
         print("[!] 전처리 후 유효한 문서가 없습니다.")
         return
 
-    # ── Phase 4: 키워드 추출 ──
-    print("\n[Phase 4] 키워드 추출")
+    # ── Phase 4: 키워드 추출 (2트랙 블렌딩) ──
+    print("\n[Phase 4] 키워드 추출 (2트랙 블렌딩)")
     print("-" * 40)
 
-    # 4-1. TF-IDF
-    tfidf_keywords = extract_tfidf_keywords(processed_docs)
-    print(f"  TF-IDF 상위 키워드: {[kw for kw, _ in tfidf_keywords[:10]]}...")
+    # 4-0. 최근/전체 문서 분리
+    recent_docs, full_docs = _split_docs_by_recency(processed_docs, RECENT_WINDOW_DAYS)
 
-    # 4-2. KeyBERT
-    candidates = [kw for kw, _ in tfidf_keywords]
-    keybert_keywords = extract_keybert_keywords(processed_docs, candidates)
-    print(f"  KeyBERT 선정 키워드: {[kw for kw, _ in keybert_keywords[:10]]}...")
+    if len(recent_docs) >= RECENT_MIN_DOCS:
+        # ── 트랙 1: 최근 7일 데이터 ──
+        print(f"\n  [트랙 1] 최근 {RECENT_WINDOW_DAYS}일 데이터 ({len(recent_docs)}건)")
+        recent_tfidf = extract_tfidf_keywords(recent_docs, min_df=1)
+        recent_candidates = [kw for kw, _ in recent_tfidf]
+        recent_keybert = extract_keybert_keywords(recent_docs, recent_candidates)
+        print(f"  [트랙 1] KeyBERT 키워드: {[kw for kw, _ in recent_keybert[:10]]}...")
 
-    # 4-3. 확장 키워드 추출 (명사구 N-gram)
+        # ── 트랙 2: 전체 데이터 ──
+        print(f"\n  [트랙 2] 전체 데이터 ({len(full_docs)}건)")
+        full_tfidf = extract_tfidf_keywords(full_docs)
+        full_candidates = [kw for kw, _ in full_tfidf]
+        full_keybert = extract_keybert_keywords(full_docs, full_candidates)
+        print(f"  [트랙 2] KeyBERT 키워드: {[kw for kw, _ in full_keybert[:10]]}...")
+
+        # ── 블렌딩 ──
+        keybert_keywords = _blend_keywords(
+            recent_keybert, full_keybert,
+            BLEND_RECENT_WEIGHT, BLEND_FULL_WEIGHT,
+        )
+        print(f"\n  [블렌딩] 최종 키워드 ({BLEND_RECENT_WEIGHT:.0%} 최근 + {BLEND_FULL_WEIGHT:.0%} 전체):")
+        print(f"    {[kw for kw, _ in keybert_keywords[:10]]}...")
+    else:
+        # ── 폴백: 최근 데이터 부족 → 전체 데이터만 사용 ──
+        print(f"  [폴백] 최근 {RECENT_WINDOW_DAYS}일 문서 {len(recent_docs)}건 < {RECENT_MIN_DOCS}건 → 전체 데이터만 사용")
+        tfidf_keywords = extract_tfidf_keywords(processed_docs)
+        candidates = [kw for kw, _ in tfidf_keywords]
+        keybert_keywords = extract_keybert_keywords(processed_docs, candidates)
+        print(f"  KeyBERT 선정 키워드: {[kw for kw, _ in keybert_keywords[:10]]}...")
+
+    # 4-3. 확장 키워드 추출 (명사구 N-gram) — 전체 데이터로 1회
     extended_keywords = extract_extended_keywords(processed_docs)
     if extended_keywords:
         print(f"  확장 키워드 예시: {[kw for kw, _ in extended_keywords[:10]]}...")
@@ -185,13 +211,18 @@ def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False
     _print_results(final_keywords)
     _save_results(final_keywords)
 
-    # BigQuery에 분석 결과 저장
-    print("\n[Phase 7] 분석 결과 BigQuery 저장")
+    # 분석 결과 저장 (BigQuery + GCS)
+    print("\n[Phase 7] 분석 결과 저장")
     print("-" * 40)
     try:
         insert_trend_results(final_keywords)
     except Exception as e:
         print(f"  [WARN] BigQuery 결과 저장 실패: {e}")
+
+    try:
+        upload_trend_results_to_gcs(final_keywords)
+    except Exception as e:
+        print(f"  [WARN] GCS 결과 저장 실패: {e}")
 
     print("\n완료!")
 
@@ -334,6 +365,61 @@ def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict], instagram_dat
         insert_raw_contents(all_docs)
     except Exception as e:
         print(f"  [WARN] BigQuery INSERT 실패: {e}")
+
+
+def _split_docs_by_recency(
+    docs: list[dict], days: int = 7
+) -> tuple[list[dict], list[dict]]:
+    """문서를 최근 N일과 전체로 분리.
+
+    Returns:
+        (recent_docs, full_docs) — full_docs는 전체 문서 (recent 포함)
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    recent = [doc for doc in docs if doc.get("date", "") >= cutoff]
+    print(f"  [문서 분리] 전체 {len(docs)}건 중 최근 {days}일: {len(recent)}건")
+    return recent, docs
+
+
+def _blend_keywords(
+    recent_kw: list[tuple[str, float]],
+    full_kw: list[tuple[str, float]],
+    recent_weight: float = 0.6,
+    full_weight: float = 0.4,
+) -> list[tuple[str, float]]:
+    """두 트랙의 키워드 점수를 정규화 후 가중 블렌딩.
+
+    Returns:
+        블렌딩된 [(키워드, 점수), ...] 상위 KEYBERT_TOP_N개
+    """
+    def _normalize(kw_list: list[tuple[str, float]]) -> dict[str, float]:
+        if not kw_list:
+            return {}
+        max_score = max(score for _, score in kw_list) if kw_list else 1.0
+        if max_score == 0:
+            max_score = 1.0
+        return {kw: score / max_score for kw, score in kw_list}
+
+    recent_map = _normalize(recent_kw)
+    full_map = _normalize(full_kw)
+
+    all_keywords = set(recent_map.keys()) | set(full_map.keys())
+
+    blended = []
+    for kw in all_keywords:
+        r_score = recent_map.get(kw, 0.0)
+        f_score = full_map.get(kw, 0.0)
+        blended_score = r_score * recent_weight + f_score * full_weight
+        blended.append((kw, blended_score))
+
+    blended.sort(key=lambda x: x[1], reverse=True)
+
+    # 최근 트랙에만 있는 키워드 수 로깅
+    recent_only = set(recent_map.keys()) - set(full_map.keys())
+    if recent_only:
+        print(f"  [블렌딩] 최근에만 등장한 새 키워드 {len(recent_only)}개: {list(recent_only)[:5]}...")
+
+    return blended[:KEYBERT_TOP_N]
 
 
 def _generate_demo_data() -> list[dict]:

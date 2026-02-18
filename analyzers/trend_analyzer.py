@@ -34,7 +34,7 @@ def analyze_trends(
         return []
 
     # 1. 월별 빈도 계산
-    monthly_freq = _compute_monthly_frequency(processed_docs, design_keywords)
+    monthly_freq = compute_monthly_frequency(processed_docs, design_keywords)
 
     # 2. 트렌드 방향 판별 (상승/하강/안정/시즌)
     trend_directions = _classify_trends(monthly_freq)
@@ -107,7 +107,7 @@ def _map_extended_keywords(
         kw["extended_keyword"] = best_phrase if best_phrase else word
 
 
-def _compute_monthly_frequency(
+def compute_monthly_frequency(
     docs: list[dict], keywords: list[dict]
 ) -> dict[str, dict[str, int]]:
     """키워드별 월별 출현 빈도 계산"""

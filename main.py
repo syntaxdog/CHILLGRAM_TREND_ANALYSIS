@@ -33,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from collectors.naver_blog import collect_naver_blogs
 from collectors.youtube import collect_youtube
-from collectors.instagram import collect_instagram
 from collectors.google_trends import get_google_trends
 from collectors.naver_datalab import get_search_trend, get_shopping_keywords_trend
 from processors.preprocessor import preprocess_documents
@@ -72,14 +71,13 @@ def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False
 
         naver_data = collect_naver_blogs(search_queries, mode=mode)
         youtube_data = collect_youtube(search_queries, mode=mode)
-        instagram_data = collect_instagram(search_queries, mode=mode)
 
-        all_documents = naver_data + youtube_data + instagram_data
+        all_documents = naver_data + youtube_data
         print(f"\n  총 수집 문서: {len(all_documents)}건")
 
         # 원본 수집 데이터 저장 (GCP만)
         if all_documents:
-            _save_to_gcp(naver_data, youtube_data, instagram_data)
+            _save_to_gcp(naver_data, youtube_data)
 
         if not all_documents:
             print("\n[!] 수집된 데이터가 없습니다.")
@@ -224,26 +222,58 @@ def main(mode: str = "daily", day: int | None = None, analyze_only: bool = False
     except Exception as e:
         print(f"  [WARN] GCS 결과 저장 실패: {e}")
 
-    # ── Phase 8: 시각화 차트 생성 + GCS 업로드 ──
-    print("\n[Phase 8] 시각화 차트 생성")
+    # ── Phase 8: 시각화 차트 생성 + PDF 보고서 + GCS 업로드 ──
+    print("\n[Phase 8] 시각화 차트 + PDF 보고서 생성")
     print("-" * 40)
+
+    charts_dir = Path(__file__).parent / "output" / "charts"
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(__file__).parent / "output"
+
     try:
         from visualize import (
             chart_top_keywords, chart_category_distribution,
-            chart_trend_direction, chart_wordcloud, _upload_charts_to_gcs,
+            chart_trend_direction, chart_wordcloud, chart_monthly_frequency,
+            generate_pdf_report, upload_pdf_to_gcs, _upload_charts_to_gcs,
         )
-        charts_dir = Path(__file__).parent / "output" / "charts"
-        charts_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"  [ERR] visualize 모듈 로드 실패: {e}")
+        import traceback; traceback.print_exc()
+        print("\n완료!")
+        return
 
-        chart_top_keywords(final_keywords, charts_dir)
-        chart_category_distribution(final_keywords, charts_dir)
-        chart_trend_direction(final_keywords, charts_dir)
-        chart_wordcloud(final_keywords, charts_dir)
+    # 개별 차트 생성 (하나 실패해도 나머지 진행)
+    chart_funcs = [
+        ("Top20 키워드", lambda: chart_top_keywords(final_keywords, charts_dir)),
+        ("카테고리 분포", lambda: chart_category_distribution(final_keywords, charts_dir)),
+        ("트렌드 방향", lambda: chart_trend_direction(final_keywords, charts_dir)),
+        ("월별 빈도 추이", lambda: chart_monthly_frequency(final_keywords, processed_docs, charts_dir)),
+        ("워드클라우드", lambda: chart_wordcloud(final_keywords, charts_dir)),
+    ]
+    for name, func in chart_funcs:
+        try:
+            func()
+        except Exception as e:
+            print(f"  [WARN] {name} 차트 생성 실패: {e}")
+            import traceback; traceback.print_exc()
 
-        chart_files = list(charts_dir.glob("*.png"))
+    # 차트 PNG → GCS 업로드
+    chart_files = list(charts_dir.glob("*.png"))
+    print(f"  [차트] 로컬 PNG {len(chart_files)}개 생성됨: {[f.name for f in chart_files]}")
+    try:
         _upload_charts_to_gcs(chart_files)
     except Exception as e:
-        print(f"  [WARN] 시각화 실패: {e}")
+        print(f"  [ERR] GCS 차트 업로드 실패: {e}")
+        import traceback; traceback.print_exc()
+
+    # PDF 보고서 생성 + GCS 업로드
+    try:
+        pdf_path = generate_pdf_report(final_keywords, charts_dir, output_dir)
+        if pdf_path:
+            upload_pdf_to_gcs(pdf_path)
+    except Exception as e:
+        print(f"  [WARN] PDF 생성/업로드 실패: {e}")
+        import traceback; traceback.print_exc()
 
     print("\n완료!")
 
@@ -316,10 +346,8 @@ def _save_results(keywords: list[dict]):
     print(f"  TXT 저장: {txt_path}")
 
 
-def _save_raw_data(naver_data: list[dict], youtube_data: list[dict], instagram_data: list[dict] = None):
+def _save_raw_data(naver_data: list[dict], youtube_data: list[dict]):
     """수집된 원본 데이터를 파일로 저장"""
-    if instagram_data is None:
-        instagram_data = []
     output_dir = Path(__file__).parent / "output"
     output_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -330,18 +358,16 @@ def _save_raw_data(naver_data: list[dict], youtube_data: list[dict], instagram_d
         "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "naver_blog_count": len(naver_data),
         "youtube_count": len(youtube_data),
-        "instagram_count": len(instagram_data),
-        "total_count": len(naver_data) + len(youtube_data) + len(instagram_data),
+        "total_count": len(naver_data) + len(youtube_data),
         "naver_blog": naver_data,
         "youtube": youtube_data,
-        "instagram": instagram_data,
     }
     with open(raw_path, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
 
     # CSV로도 저장 (엑셀에서 바로 열 수 있게)
     csv_path = output_dir / f"raw_data_{timestamp}.csv"
-    all_docs = naver_data + youtube_data + instagram_data
+    all_docs = naver_data + youtube_data
     if all_docs:
         fieldnames = ["source", "title", "description", "date", "link", "query"]
         with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -363,10 +389,8 @@ def _save_raw_data(naver_data: list[dict], youtube_data: list[dict], instagram_d
     print(f"    CSV:  {csv_path}")
 
 
-def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict], instagram_data: list[dict] = None):
+def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict]):
     """수집 데이터를 GCS 백업 + BigQuery INSERT"""
-    if instagram_data is None:
-        instagram_data = []
     print("\n  [GCP 저장]")
 
     # GCS 백업
@@ -375,14 +399,12 @@ def _save_to_gcp(naver_data: list[dict], youtube_data: list[dict], instagram_dat
             upload_to_gcs(naver_data, "naver")
         if youtube_data:
             upload_to_gcs(youtube_data, "youtube")
-        if instagram_data:
-            upload_to_gcs(instagram_data, "instagram")
     except Exception as e:
         print(f"  [WARN] GCS 업로드 실패: {e}")
 
     # BigQuery INSERT (중복 제외)
     try:
-        all_docs = naver_data + youtube_data + instagram_data
+        all_docs = naver_data + youtube_data
         insert_raw_contents(all_docs)
     except Exception as e:
         print(f"  [WARN] BigQuery INSERT 실패: {e}")

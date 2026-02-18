@@ -191,6 +191,52 @@ def chart_trend_direction(keywords: list[dict], output_dir: Path):
     print(f"  [차트] {path}")
 
 
+def chart_monthly_frequency(keywords: list[dict], processed_docs: list[dict], output_dir: Path):
+    """5. 키워드별 월별 빈도 변화 추이 라인 차트 (TOP 10)."""
+    from analyzers.trend_analyzer import compute_monthly_frequency
+
+    monthly_freq = compute_monthly_frequency(processed_docs, keywords)
+
+    # TOP 10 키워드만 표시
+    top_keywords = keywords[:10]
+    top_kw_names = [kw["keyword"] for kw in top_keywords]
+
+    # 전체 월 목록 (정렬)
+    all_months = sorted({m for freq in monthly_freq.values() for m in freq})
+    if not all_months:
+        print("  [WARN] 월별 빈도 데이터가 없어 차트를 생성할 수 없습니다.")
+        return
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    for kw_info in top_keywords:
+        kw = kw_info["keyword"]
+        if kw not in monthly_freq:
+            continue
+        freq = monthly_freq[kw]
+        values = [freq.get(m, 0) for m in all_months]
+        color = CATEGORY_COLORS.get(kw_info.get("category", ""), DEFAULT_COLOR)
+        ax.plot(all_months, values, marker="o", markersize=4, linewidth=2,
+                label=kw, color=color, alpha=0.85)
+
+    ax.set_xlabel("월", fontsize=11)
+    ax.set_ylabel("언급 빈도", fontsize=11)
+    ax.set_title("키워드별 월별 빈도 변화 추이 (TOP 10)", fontsize=16, fontweight="bold", pad=15)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # x축 라벨 회전
+    plt.xticks(rotation=45, ha="right", fontsize=9)
+    ax.legend(loc="upper left", fontsize=9, ncol=2, framealpha=0.9)
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    path = output_dir / "05_monthly_frequency.png"
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [차트] {path}")
+
+
 def chart_wordcloud(keywords: list[dict], output_dir: Path):
     """4. 키워드 워드클라우드."""
     try:
@@ -236,6 +282,121 @@ def chart_wordcloud(keywords: list[dict], output_dir: Path):
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"  [차트] {path}")
+
+
+def generate_pdf_report(keywords: list[dict], charts_dir: Path, output_dir: Path) -> Path | None:
+    """차트 PNG들과 키워드 요약을 합쳐 PDF 보고서를 생성.
+
+    Returns:
+        생성된 PDF 파일 경로 (실패 시 None)
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    pdf_path = output_dir / "trend_report.pdf"
+
+    try:
+        with PdfPages(str(pdf_path)) as pdf:
+            # ── 1페이지: 타이틀 + 키워드 테이블 ──
+            fig, ax = plt.subplots(figsize=(12, 16))
+            ax.axis("off")
+
+            today_str = date.today().isoformat()
+            title_text = f"식품 패키지 디자인 트렌드 키워드 분석 보고서\n{today_str}"
+            ax.text(0.5, 0.97, title_text, transform=ax.transAxes,
+                    fontsize=20, fontweight="bold", ha="center", va="top")
+
+            # 키워드 테이블
+            if keywords:
+                col_labels = ["순위", "키워드", "확장 키워드", "카테고리", "트렌드", "점수"]
+                table_data = []
+                for kw in keywords[:20]:
+                    table_data.append([
+                        str(kw.get("rank", "")),
+                        kw.get("keyword", ""),
+                        kw.get("extended_keyword", kw.get("keyword", "")),
+                        kw.get("category", ""),
+                        kw.get("trend", ""),
+                        f"{kw.get('score', kw.get('final_score', 0)):.3f}",
+                    ])
+
+                table = ax.table(
+                    cellText=table_data, colLabels=col_labels,
+                    loc="center", cellLoc="center",
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1.0, 1.4)
+
+                # 헤더 스타일
+                for j in range(len(col_labels)):
+                    table[0, j].set_facecolor("#4472C4")
+                    table[0, j].set_text_props(color="white", fontweight="bold")
+
+                # 행 색상 교대
+                for i in range(1, len(table_data) + 1):
+                    for j in range(len(col_labels)):
+                        if i % 2 == 0:
+                            table[i, j].set_facecolor("#D9E2F3")
+
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+            # ── 나머지 페이지: 차트 PNG 삽입 ──
+            chart_order = [
+                "01_top20_keywords.png",
+                "02_category_distribution.png",
+                "03_trend_direction.png",
+                "05_monthly_frequency.png",
+                "04_wordcloud.png",
+            ]
+            for chart_name in chart_order:
+                chart_path = charts_dir / chart_name
+                if not chart_path.exists():
+                    continue
+                img = plt.imread(str(chart_path))
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax.imshow(img)
+                ax.axis("off")
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+        print(f"  [PDF] 보고서 생성 완료: {pdf_path}")
+        return pdf_path
+    except Exception as e:
+        print(f"  [WARN] PDF 생성 실패: {e}")
+        return None
+
+
+def upload_pdf_to_gcs(pdf_path: Path):
+    """PDF 보고서를 GCS에 업로드 (latest + history)."""
+    if not pdf_path or not pdf_path.exists():
+        return
+
+    try:
+        from storage.gcp_client import get_gcs_client, GCS_BUCKET
+    except Exception as e:
+        print(f"  [WARN] GCS 클라이언트 로드 실패: {e}")
+        return
+
+    today = date.today().isoformat()
+
+    try:
+        client = get_gcs_client()
+        bucket = client.bucket(GCS_BUCKET)
+
+        # latest
+        latest_blob = bucket.blob("results/latest/trend_report.pdf")
+        latest_blob.upload_from_filename(str(pdf_path), content_type="application/pdf")
+
+        # history
+        history_blob = bucket.blob(f"results/history/{today}/trend_report.pdf")
+        history_blob.upload_from_filename(str(pdf_path), content_type="application/pdf")
+
+        print(f"  [GCS] PDF 업로드 완료")
+        print(f"    latest:  gs://{GCS_BUCKET}/results/latest/trend_report.pdf")
+        print(f"    history: gs://{GCS_BUCKET}/results/history/{today}/trend_report.pdf")
+    except Exception as e:
+        print(f"  [WARN] GCS PDF 업로드 실패: {e}")
 
 
 def main():

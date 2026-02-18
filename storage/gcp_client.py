@@ -301,6 +301,7 @@ def upload_trend_results_to_gcs(keywords: list[dict]) -> str:
     # 1. latest (웹에서 항상 이 경로로 fetch)
     latest_blob = bucket.blob("results/latest/trend_keywords.json")
     latest_blob.upload_from_string(json_str, content_type="application/json")
+    latest_blob.make_public()
     latest_path = f"gs://{GCS_BUCKET}/results/latest/trend_keywords.json"
 
     # 2. history (날짜별 보관)

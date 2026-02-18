@@ -32,6 +32,7 @@ def filter_design_keywords(
 
     # "제외" 카테고리 제거
     result = []
+    excluded = []
     for kw, cat in categorized.items():
         if cat != "제외":
             result.append({
@@ -39,10 +40,46 @@ def filter_design_keywords(
                 "score": score_map.get(kw, 0.0),
                 "category": cat,
             })
+        else:
+            excluded.append({
+                "keyword": kw,
+                "score": score_map.get(kw, 0.0),
+            })
 
-    excluded_count = len(keyword_list) - len(result)
+    excluded_count = len(excluded)
     print(f"  [디자인 필터] {len(keyword_list)}개 → {len(result)}개 (제외: {excluded_count}개)")
+
+    # 폴백: 20개 미만이면 제외된 키워드 중 점수 높은 순으로 복구
+    from config import FINAL_KEYWORD_COUNT
+    min_required = FINAL_KEYWORD_COUNT
+    if len(result) < min_required and excluded:
+        excluded.sort(key=lambda x: x["score"], reverse=True)
+        # 카테고리 목록에서 기본값 선택
+        default_categories = list(DESIGN_CATEGORIES.keys())
+        for ex_kw in excluded:
+            if len(result) >= min_required:
+                break
+            # 규칙 기반으로 카테고리 재매칭 시도, 없으면 기본 카테고리 배정
+            cat = _guess_category(ex_kw["keyword"])
+            result.append({
+                "keyword": ex_kw["keyword"],
+                "score": ex_kw["score"],
+                "category": cat,
+            })
+        recovered = len(result) - (len(keyword_list) - excluded_count)
+        print(f"  [디자인 필터] 키워드 부족 → {recovered}개 복구 (총 {len(result)}개)")
+
     return result
+
+
+def _guess_category(keyword: str) -> str:
+    """키워드에 가장 가까운 카테고리를 추측. 매칭 안 되면 첫 번째 카테고리 반환."""
+    for cat, words in DESIGN_CATEGORIES.items():
+        for w in words:
+            if w in keyword or keyword in w:
+                return cat
+    # 기본값: 첫 번째 카테고리
+    return list(DESIGN_CATEGORIES.keys())[0]
 
 
 def _filter_with_gemini(keywords: list[str], api_key: str) -> dict[str, str]:
@@ -66,10 +103,14 @@ def _filter_with_gemini(keywords: list[str], api_key: str) -> dict[str, str]:
 활용 가능하면 아래 카테고리 중 하나를 지정하세요:
 {categories_desc}
 
-**"제외" 기준 — 아래에 해당하는 경우만 제외하세요:**
+**중요: 최소 {min(len(keywords), 25)}개 이상을 포함시키세요. 제외는 극히 제한적으로만 하세요.**
+
+**"제외" 기준 — 아래에 **정확히** 해당하는 경우만 제외하세요:**
 - 가격/배송/구매 관련 (가성비, 배송, 할인)
 - 추상적 감정/평가 (맛있다, 추천, 별로)
 - 디자인과 전혀 무관한 일반 명사 (회사, 매장, 직원)
+
+조금이라도 디자인 요소로 해석 가능하면 반드시 포함하세요.
 
 **가급적 포함시키세요:**
 - 맛/원료 키워드 → 색감, 일러스트로 전환 가능 (예: 말차→그린톤, 딸기→핑크+과일 일러스트)

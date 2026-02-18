@@ -387,6 +387,7 @@ def upload_pdf_to_gcs(pdf_path: Path):
         # latest
         latest_blob = bucket.blob("results/latest/trend_report.pdf")
         latest_blob.upload_from_filename(str(pdf_path), content_type="application/pdf")
+        latest_blob.make_public()
 
         # history
         history_blob = bucket.blob(f"results/history/{today}/trend_report.pdf")
@@ -463,6 +464,7 @@ def _upload_charts_to_gcs(chart_files: list[Path]):
             latest_path = f"results/latest/charts/{f.name}"
             blob = bucket.blob(latest_path)
             blob.upload_from_filename(str(f), content_type="image/png")
+            blob.make_public()
 
             # history (날짜별)
             history_path = f"results/history/{today}/charts/{f.name}"

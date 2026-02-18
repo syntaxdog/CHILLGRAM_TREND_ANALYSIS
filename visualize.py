@@ -105,7 +105,7 @@ def chart_top_keywords(keywords: list[dict], output_dir: Path):
 
     kw_list = list(reversed(keywords[:20]))
     labels = [f"{kw['keyword']}" for kw in kw_list]
-    scores = [kw["score"] for kw in kw_list]
+    scores = [kw.get("score", kw.get("final_score", 0)) for kw in kw_list]
     colors = [CATEGORY_COLORS.get(kw["category"], DEFAULT_COLOR) for kw in kw_list]
 
     bars = ax.barh(labels, scores, color=colors, height=0.7, edgecolor="white", linewidth=0.5)
@@ -257,7 +257,7 @@ def chart_wordcloud(keywords: list[dict], output_dir: Path):
                 font_path = f.fname
                 break
 
-    word_freq = {kw["keyword"]: max(kw["score"] * 100, 1) for kw in keywords}
+    word_freq = {kw["keyword"]: max(kw.get("score", kw.get("final_score", 0)) * 100, 1) for kw in keywords}
 
     wc_kwargs = dict(
         width=1200, height=600,
